@@ -1,0 +1,346 @@
+name: Apply overlay cron fix
+
+on:
+  push:
+    branches:
+      - automation/overlay-cron-fix
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-24.04
+    env:
+      BASE_SHA: 2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c
+      TARGET_BRANCH: overlay-store
+      AUTOMATION_BRANCH: automation/overlay-cron-fix
+      HOMEBREW_DEVELOPER: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_OVERLAY: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build and validate the final commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base64 --decode <<'PATCH' | gzip --decompress > /tmp/overlay-cron-fix.patch
+          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
+          PATCH
+          git reset --hard "${BASE_SHA}"
+          git apply --check /tmp/overlay-cron-fix.patch
+          git apply /tmp/overlay-cron-fix.patch
+
+          # The reviewed patch used an invocation-time day marker. Cron is the
+          # explicit fallback instead, so retain the generation fast path.
+          git checkout "${BASE_SHA}" -- Library/Homebrew/utils/overlay.sh
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one match in {path}: {old!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          brew = Path("bin/brew")
+          bootstrap = '''source "${HOMEBREW_REPOSITORY}/Library/Homebrew/utils/overlay.sh"
+          homebrew-overlay-bootstrap "$@" || exit $?
+          '''
+          cron_entry = '''source "${HOMEBREW_REPOSITORY}/Library/Homebrew/utils/overlay.sh"
+          homebrew-overlay-bootstrap "$@" || exit $?
+
+          # Provide a cron entry point without adding work to shell startup.
+          if [[ "${1:-}" == "--overlay-sync" ]]
+          then
+            if (($# != 1))
+            then
+              echo "Usage: brew --overlay-sync" >&2
+              exit 2
+            fi
+            if ! homebrew-overlay-truthy "${HOMEBREW_OVERLAY_ACTIVE:-}"
+            then
+              echo "Error: --overlay-sync requires an active per-user Homebrew overlay." >&2
+              exit 1
+            fi
+            homebrew-overlay-sync --force || exit $?
+            exit 0
+          fi
+          '''
+          replace_once(brew, bootstrap, cron_entry)
+
+          overlay = Path("Library/Homebrew/utils/overlay.sh")
+          active = '''  if homebrew-overlay-truthy "${HOMEBREW_OVERLAY_ACTIVE:-}"
+            then
+              homebrew-overlay-sync || return 1
+              return 0
+            fi
+          '''
+          cron_active = '''  if homebrew-overlay-truthy "${HOMEBREW_OVERLAY_ACTIVE:-}"
+            then
+              [[ "${1:-}" == "--overlay-sync" ]] && return 0
+              homebrew-overlay-sync || return 1
+              return 0
+            fi
+          '''
+          replace_once(overlay, active, cron_active)
+
+          docs = Path("docs/Native-User-Overlay.md")
+          text = docs.read_text()
+          daily = '''Once per local system calendar day, the first active overlay invocation forces a
+          structural rescan even when both generations are unchanged. The durable
+          `view.day` marker is advanced only after the reconciled view and stamp are
+          committed. This bounds detection of manual base-Cellar additions and removals
+          without a daemon or an elapsed-time scheduler; generation changes still converge
+          immediately.
+
+          '''
+          if text.count(daily) != 1:
+              raise SystemExit("daily synchronization paragraph was not found exactly once")
+          text = text.replace(daily, "", 1)
+          text = text.replace(
+              "safe, startup normally returns without traversing either Cellar.",
+              "safe, startup returns without traversing either Cellar.",
+              1,
+          )
+          marker = "var/homebrew/overlay/view.day\n"
+          if text.count(marker) != 1:
+              raise SystemExit("view.day managed-state entry was not found exactly once")
+          text = text.replace(marker, "", 1)
+          anchor = '''```sh
+          /home/linuxbrew/.linuxbrew/Homebrew/Library/Homebrew/utils/overlay.sh \\
+            --bump-generation /home/linuxbrew/.linuxbrew
+          ```
+
+          '''
+          cron = anchor + '''## Periodic reconciliation
+
+          Package generations converge immediately when administrator changes use this
+          patched `brew`. To catch manual base-Cellar changes that bypass generation
+          maintenance, each developer can schedule one forced reconciliation in their
+          user crontab:
+
+          ```cron
+          17 4 * * * /home/linuxbrew/.linuxbrew/bin/brew --overlay-sync >/dev/null
+          ```
+
+          `brew --overlay-sync` loads the same inline, user, and system configuration as
+          any other invocation, redirects through the user prefix, and forces a structural
+          Cellar, `opt`, and linked-keg reconciliation. It is idempotent and does not add a
+          shell-startup hook or package-management daemon. Standard error is left visible
+          to cron so failures are reported.
+
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit("generation bump example was not found exactly once")
+          docs.write_text(text.replace(anchor, cron, 1))
+          PY
+
+          cat > Library/Homebrew/test/overlay_cron_sync_spec.rb <<'RUBY'
+          # typed: false
+          # frozen_string_literal: true
+
+          require "fileutils"
+          require "open3"
+
+          RSpec.describe "Homebrew overlay cron synchronization" do
+            it "runs the cron entry point as one forced synchronization" do
+              root = mktmpdir
+              prefix = root/"prefix"
+              brew = prefix/"bin/brew"
+              overlay = prefix/"Library/Homebrew/utils/overlay.sh"
+              home = root/"home"
+              user_config = home/".homebrew"
+              brew.parent.mkpath
+              overlay.parent.mkpath
+              user_config.mkpath
+              FileUtils.cp HOMEBREW_LIBRARY_PATH.parent.parent/"bin/brew", brew
+              brew.chmod 0755
+              (user_config/"overlay.env").write("HOMEBREW_OVERLAY_BASE_PREFIX=/local-base\n")
+              overlay.write <<~'BASH'
+                homebrew-overlay-bootstrap() {
+                  export HOMEBREW_OVERLAY_ACTIVE=1
+                }
+                homebrew-overlay-truthy() {
+                  [[ "${1:-}" == "1" ]]
+                }
+                homebrew-overlay-sync() {
+                  printf '%s|%s\n' "${HOMEBREW_OVERLAY_BASE_PREFIX}" "$*"
+                }
+              BASH
+
+              stdout, stderr, status = Open3.capture3(
+                {
+                  "HOME" => home.to_s,
+                  "HOMEBREW_OVERLAY" => "1",
+                  "HOMEBREW_OVERLAY_BASE_PREFIX" => "/inline-base",
+                },
+                brew.to_s,
+                "--overlay-sync",
+              )
+
+              expect([stdout, stderr, status.success?]).to eq(["/inline-base|--force\n", "", true])
+            end
+
+            it "skips the quick startup sync before cron reconciliation" do
+              script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+              stdout, stderr, status = Open3.capture3(
+                {
+                  "HOMEBREW_OVERLAY" => "1",
+                  "HOMEBREW_OVERLAY_ACTIVE" => "1",
+                },
+                "/bin/bash",
+                "-c",
+                <<~'BASH',
+                  source "$1"
+                  homebrew-overlay-sync() { printf 'unexpected\n'; }
+                  homebrew-overlay-bootstrap --overlay-sync
+                BASH
+                "bash",
+                script.to_s,
+              )
+
+              expect([stdout, stderr, status.success?]).to eq(["", "", true])
+            end
+          end
+          RUBY
+
+          git diff --check
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+
+          ./bin/brew style --fix --changed
+          ./bin/brew tests --only=formula_pin,cmd/pin,overlay_cron_sync --no-parallel
+          ./bin/brew typecheck
+          ./bin/brew lgtm --online
+
+          git diff --check
+          git status --short
+          git add bin/brew \
+            Library/Homebrew/utils/overlay.sh \
+            Library/Homebrew/formula_pin.rb \
+            Library/Homebrew/cmd/pin.rb \
+            Library/Homebrew/test/formula_pin_spec.rb \
+            Library/Homebrew/test/cmd/pin_spec.rb \
+            Library/Homebrew/test/overlay_cron_sync_spec.rb \
+            docs/Native-User-Overlay.md
+
+          git config user.name "wigner"
+          git config user.email "240170694+wignerStan@users.noreply.github.com"
+          git commit \
+            -m "Fix overlay configuration, cron sync, and pins" \
+            -m "Prefer inline and per-user overlay settings over system configuration, provide an explicit cron reconciliation path, and keep pins on durable user-owned kegs."
+
+          current_target="$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk '{print $1}')"
+          if [[ "${current_target}" != "${BASE_SHA}" ]]
+          then
+            echo "Error: ${TARGET_BRANCH} moved from ${BASE_SHA} to ${current_target}." >&2
+            exit 1
+          fi
+
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          git push origin --delete "${AUTOMATION_BRANCH}"
