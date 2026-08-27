@@ -3,6 +3,7 @@
 
 require "abstract_command"
 require "formula"
+require "overlay"
 require "cask/cask"
 
 module Homebrew
@@ -33,7 +34,16 @@ module Homebrew
         formulae, casks = args.named.to_resolved_formulae_to_casks
 
         (formulae + casks).each do |package|
-          if package.pinned?
+          if formulae.include?(package) && Homebrew::Overlay.inherited_only_formula?(package)
+            # Remove dangling or pre-overlay pins that still point into the
+            # administrator Cellar. They cannot safely constrain future base
+            # updates or removals.
+            package.unpin
+            ofail <<~EOS
+              #{package.full_name} is inherited from the administrator prefix and cannot be pinned durably.
+              Run `brew reinstall #{package.full_name}` to create a user-owned keg, then pin it.
+            EOS
+          elsif package.pinned?
             opoo "#{package.full_name} already pinned"
           elsif !package.pinnable?
             ofail "#{package.full_name} not installed"
