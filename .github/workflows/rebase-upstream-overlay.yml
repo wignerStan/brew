@@ -6,7 +6,7 @@ on:
     - cron: "17 4 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: rebase-overlay-branch
@@ -28,6 +28,7 @@ jobs:
         with:
           ref: overlay-store
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Rebase onto current Homebrew main
         id: rebase
@@ -103,21 +104,32 @@ jobs:
           set -euo pipefail
           bin/brew typecheck
 
-      - name: Publish tested candidate
-        if: steps.rebase.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git push --force origin HEAD:refs/heads/automation/overlay-rebase-candidate
-
-      - name: Promote the exact tested SHA
+      - name: Publish tested candidate and promote the exact tested SHA
         if: steps.rebase.outputs.changed == 'true'
         shell: bash
         env:
           BEFORE: ${{ steps.rebase.outputs.before }}
+          AFTER: ${{ steps.rebase.outputs.after }}
+          OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ steps.rebase.outputs.after }}"
-          git push \
-            --force-with-lease=refs/heads/overlay-store:${BEFORE} \
-            origin HEAD:refs/heads/overlay-store
+
+          if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
+            echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+
+          askpass="$(mktemp)"
+          trap 'rm -f "${askpass}"' EXIT
+          printf '%s\n' '#!/bin/sh' \
+            'case "$1" in *Username*) printf "%s\\n" x-access-token ;; *) printf "%s\\n" "${OVERLAY_PROMOTION_TOKEN:?}" ;; esac' \
+            >"${askpass}"
+          chmod 0700 "${askpass}"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git push --force origin HEAD:refs/heads/automation/overlay-rebase-candidate
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git push \
+              --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+              origin HEAD:refs/heads/overlay-store
