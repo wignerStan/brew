@@ -92,6 +92,11 @@ jobs:
               '    let(:inherited_keg) { instance_double(Keg, to_path: inherited_keg_path) }\n\n'
               '    before do\n',
           )
+          replace(
+              "Library/Homebrew/test/uninstall_spec.rb",
+              '      end.to output(/administrator Homebrew prefix/).to_stderr\n',
+              '      end.to output(/cannot be modified from the user prefix/).to_stderr\n',
+          )
 
           replace(
               "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb",
