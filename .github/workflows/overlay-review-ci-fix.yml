@@ -48,21 +48,6 @@ jobs:
               p.write_text(text.replace(old, new, count))
 
           replace(
-              "Library/Homebrew/overlay.rb",
-              '    def self.clear_caches!\n'
-              '      T.unsafe(::Formula).clear_cache if defined?(::Formula)\n'
-              '      T.unsafe(::Keg).clear_cache if defined?(::Keg)\n'
-              '      @link_state_entries = nil\n'
-              '    end\n',
-              '    def self.clear_caches!\n'
-              '      T.unsafe(::Formula).clear_cache if defined?(::Formula)\n'
-              '      T.unsafe(::Keg).clear_cache if defined?(::Keg)\n'
-              '      @link_state_entries = nil\n'
-              '      @atomic_exchange_supported = false\n'
-              '    end\n',
-          )
-
-          replace(
               "Library/Homebrew/test/overlay_spec.rb",
               '    stub_const("HOMEBREW_CELLAR", user_cellar)\n',
               '    stub_const("HOMEBREW_CELLAR", user_cellar)\n'
@@ -71,6 +56,9 @@ jobs:
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
               '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n',
+              '    # rubocop:disable Homebrew/NoInstanceVariableAccessInTests -- isolate the process-local exchange cache\n'
+              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n'
+              '    # rubocop:enable Homebrew/NoInstanceVariableAccessInTests\n'
               '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
               '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
               '      left.rename(temporary)\n'
@@ -84,11 +72,15 @@ jobs:
               '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
               '  end\n',
               '  after do\n'
-              '    # Test cleanup deliberately invokes the private lock release without publishing a generation.\n'
-              '    # rubocop:disable Homebrew/NoSendInTests\n'
+              '    # rubocop:disable Homebrew/NoSendInTests -- teardown must release the private lock without publishing\n'
               '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
               '    # rubocop:enable Homebrew/NoSendInTests\n'
               '  end\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    FileUtils.ln_s(base_cellar/name, rack) unless rack.exist? || rack.symlink?\n',
+              '    FileUtils.ln_s(base_cellar/name, rack) if !rack.exist? && !rack.symlink?\n',
           )
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
@@ -201,14 +193,12 @@ jobs:
           PY
 
           bin/brew style --fix \
-            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
             Library/Homebrew/test/formula_pin_spec.rb \
             Library/Homebrew/test/cmd/link_spec.rb
           bin/brew style \
-            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
@@ -240,7 +230,6 @@ jobs:
         run: |
           set -euo pipefail
           bin/brew style \
-            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
@@ -248,14 +237,13 @@ jobs:
             Library/Homebrew/test/cmd/link_spec.rb
           bin/brew typecheck
 
-      - name: Commit exact validated fixes
+      - name: Commit exact validated fixture fixes
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "OpenAI"
           git config user.email "openai@example.invalid"
           git add \
-            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
