@@ -1,0 +1,190 @@
+name: Fix and validate overlay review regressions
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-ci-fix
+    paths:
+      - .github/workflows/overlay-review-ci-fix.yml
+
+permissions:
+  contents: write
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out reviewed hardening head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: fix/overlay-review-hardening
+          fetch-depth: 0
+
+      - name: Verify expected source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "ab625c16d06493b79d0eff797e3ea5c72aac99b1"
+
+      - name: Repair validation fixtures for hardened overlay semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
+              p.write_text(text.replace(old, new, count))
+
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    stub_const("HOMEBREW_CELLAR", user_cellar)\n',
+              '    stub_const("HOMEBREW_CELLAR", user_cellar)\n'
+              '    stub_const("HOMEBREW_LINKED_KEGS", prefix/"var/homebrew/linked")\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n',
+              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n'
+              '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
+              '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
+              '      left.rename(temporary)\n'
+              '      right.rename(left)\n'
+              '      temporary.rename(right)\n'
+              '    end\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    allow(described_class).to receive(:atomic_exchange!).and_wrap_original do |original, *paths|\n'
+              '      events << [:exchange, *paths]\n'
+              '      original.call(*paths)\n'
+              '    end\n',
+              '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
+              '      events << [:exchange, left, right]\n'
+              '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
+              '      left.rename(temporary)\n'
+              '      right.rename(left)\n'
+              '      temporary.rename(right)\n'
+              '    end\n',
+          )
+
+          replace(
+              "Library/Homebrew/test/uninstall_spec.rb",
+              '    let(:local_keg) { Keg.new(dependency.rack/"2") }\n'
+              '    let(:inherited_keg) { Keg.new(HOMEBREW_PREFIX/"base-cellar/dependency/1") }\n\n'
+              '    before do\n'
+              '      local_keg.to_path.mkpath\n'
+              '      inherited_keg.to_path.mkpath\n',
+              '    let(:local_keg_path) { dependency.rack/"2" }\n'
+              '    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base-cellar/dependency/1" }\n'
+              '    let(:local_keg) { Keg.new(local_keg_path) }\n'
+              '    let(:inherited_keg) { Keg.new(inherited_keg_path) }\n\n'
+              '    before do\n'
+              '      local_keg_path.mkpath\n'
+              '      inherited_keg_path.mkpath\n',
+          )
+
+          replace(
+              "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb",
+              '      allow(Kernel).to receive(:system)\n',
+              '      allow(Kernel).to receive(:system).and_return(true)\n',
+          )
+
+          replace(
+              "Library/Homebrew/test/formula_pin_spec.rb",
+              '    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n'
+              '    allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|\n'
+              '      inherited_paths.include?(Pathname(path))\n'
+              '    end\n',
+              '    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n'
+              '    allow(Homebrew::Overlay).to receive(:base_prefix).and_return(HOMEBREW_PREFIX/"base")\n'
+              '    allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|\n'
+              '      inherited_paths.include?(Pathname(path))\n'
+              '    end\n',
+          )
+
+          replace(
+              "Library/Homebrew/test/cmd/link_spec.rb",
+              '    keg = instance_double(Keg, rack: HOMEBREW_CELLAR/"testball", linked?: false, name: "testball")\n',
+              '    keg = instance_double(\n'
+              '      Keg,\n'
+              '      rack: HOMEBREW_CELLAR/"testball",\n'
+              '      linked?: false,\n'
+              '      name: "testball",\n'
+              '      to_path: HOMEBREW_CELLAR/"testball/1.0",\n'
+              '    )\n',
+          )
+          replace(
+              "Library/Homebrew/test/cmd/link_spec.rb",
+              '        to_formula: test_formula,\n'
+              '        to_s:       "#{formula_name}/1.0",\n',
+              '        to_formula: test_formula,\n'
+              '        to_path:    HOMEBREW_CELLAR/formula_name/"1.0",\n'
+              '        to_s:       "#{formula_name}/1.0",\n',
+          )
+          PY
+
+          git diff --check
+          git diff -- Library/Homebrew/test/overlay_spec.rb \
+            Library/Homebrew/test/uninstall_spec.rb \
+            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
+            Library/Homebrew/test/formula_pin_spec.rb \
+            Library/Homebrew/test/cmd/link_spec.rb
+
+      - name: Run previously failing specs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel \
+            --only=overlay,uninstall,formula_pin,cmd/link,cmd/bundle/cleanup_subcommand
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Run style and Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew style \
+            Library/Homebrew/test/overlay_spec.rb \
+            Library/Homebrew/test/uninstall_spec.rb \
+            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
+            Library/Homebrew/test/formula_pin_spec.rb \
+            Library/Homebrew/test/cmd/link_spec.rb
+          bin/brew typecheck
+
+      - name: Commit exact validated fixture fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI"
+          git config user.email "openai@example.invalid"
+          git add \
+            Library/Homebrew/test/overlay_spec.rb \
+            Library/Homebrew/test/uninstall_spec.rb \
+            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
+            Library/Homebrew/test/formula_pin_spec.rb \
+            Library/Homebrew/test/cmd/link_spec.rb
+          git diff --cached --check
+          git commit -m "Fix overlay validation regressions"
+          git push origin HEAD:refs/heads/fix/overlay-review-hardening
