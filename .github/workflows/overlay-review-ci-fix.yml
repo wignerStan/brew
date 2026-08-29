@@ -56,7 +56,8 @@ jobs:
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
               '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n',
-              '    # rubocop:disable Homebrew/NoInstanceVariableAccessInTests -- isolate the process-local exchange cache\n'
+              '    # Reset the process-local exchange cache so each example probes independently.\n'
+              '    # rubocop:disable Homebrew/NoInstanceVariableAccessInTests\n'
               '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n'
               '    # rubocop:enable Homebrew/NoInstanceVariableAccessInTests\n'
               '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
@@ -72,7 +73,8 @@ jobs:
               '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
               '  end\n',
               '  after do\n'
-              '    # rubocop:disable Homebrew/NoSendInTests -- teardown must release the private lock without publishing\n'
+              '    # Teardown must release the private lock without publishing a generation.\n'
+              '    # rubocop:disable Homebrew/NoSendInTests\n'
               '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
               '    # rubocop:enable Homebrew/NoSendInTests\n'
               '  end\n',
