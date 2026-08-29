@@ -87,12 +87,10 @@ jobs:
               '      local_keg.to_path.mkpath\n'
               '      inherited_keg.to_path.mkpath\n',
               '    let(:local_keg_path) { dependency.rack/"2" }\n'
-              '    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base-cellar/dependency/1" }\n'
-              '    let(:local_keg) { Keg.new(local_keg_path) }\n'
-              '    let(:inherited_keg) { Keg.new(inherited_keg_path) }\n\n'
-              '    before do\n'
-              '      local_keg_path.mkpath\n'
-              '      inherited_keg_path.mkpath\n',
+              '    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base/Cellar/dependency/1" }\n'
+              '    let(:local_keg) { instance_double(Keg, to_path: local_keg_path) }\n'
+              '    let(:inherited_keg) { instance_double(Keg, to_path: inherited_keg_path) }\n\n'
+              '    before do\n',
           )
 
           replace(
