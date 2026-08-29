@@ -97,7 +97,11 @@ jobs:
 
           replace(
               "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb",
+              '      allow(Homebrew::Bundle::VscodeExtension).to receive(:cleanup_items).and_return([])\n'
+              '      allow(Homebrew::Bundle::Flatpak).to receive(:cleanup_items).and_return([])\n'
               '      allow(Kernel).to receive(:system)\n',
+              '      allow(Homebrew::Bundle::VscodeExtension).to receive(:cleanup_items).and_return([])\n'
+              '      allow(Homebrew::Bundle::Flatpak).to receive(:cleanup_items).and_return([])\n'
               '      allow(Kernel).to receive(:system).and_return(true)\n',
           )
 
