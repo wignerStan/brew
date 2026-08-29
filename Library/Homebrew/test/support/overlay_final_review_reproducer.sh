@@ -16,6 +16,7 @@ tests=(
   overlay_generation_recovery_test.sh
   overlay_generation_command_lock_test.sh
   overlay_install_failure_test.sh
+  overlay_reinstall_recovery_test.sh
   overlay_transaction_recovery_test.sh
   overlay_transaction_integrity_test.sh
   overlay_transaction_publication_durability_test.sh
@@ -27,6 +28,7 @@ tests=(
   overlay_runtime_boot_test.sh
   overlay_marker_reader_integrity_test.sh
   overlay_removal_partition_test.sh
+  overlay_rebase_workflow_test.sh
   overlay_commit_boundary_test.sh
 )
 

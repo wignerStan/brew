@@ -156,6 +156,7 @@ class FormulaInstaller
     @overlay_local_keg_committed = T.let(false, T::Boolean)
     @overlay_mutation_owned = T.let(false, T::Boolean)
     @overlay_previous_failed = T.let(nil, T.nilable(T::Boolean))
+    @overlay_base_mutation_lease = T.let(nil, T.nilable(File))
 
     # Take the original formula instance, which might have been swapped from an API instance to a source instance
     @formula = T.let(T.must(previously_fetched_formula), Formula) if previously_fetched_formula
@@ -312,6 +313,7 @@ class FormulaInstaller
   sig { params(metadata_only: T::Boolean).void }
   def prelude_fetch(metadata_only: false)
     unless @ran_prelude_fetch_metadata
+      Homebrew::Overlay.ensure_atomic_exchange_supported! if Homebrew::Overlay.transaction_required?(formula)
       deprecate_disable_type = DeprecateDisable.type(formula)
       if deprecate_disable_type.present?
         message = "#{formula.full_name} has been #{DeprecateDisable.message(formula)}"
@@ -591,6 +593,7 @@ class FormulaInstaller
     return if only_deps?
 
     if Homebrew::Overlay.active?
+      @overlay_base_mutation_lease = Homebrew::Overlay.acquire_base_mutation_lease
       @overlay_local_keg_preexisting = Homebrew::Overlay.local_keg_realization?(
         formula.name,
         formula.pkg_version.to_s,
@@ -682,6 +685,7 @@ on_request: installed_on_request?, options:)
     ensure
       finalize_failed_overlay_mutation!
       restore_overlay_failure_scope!
+      release_overlay_base_mutation_lease!
     end
     raise
   end
@@ -1087,6 +1091,15 @@ on_request: installed_on_request?, options:)
   end
 
   sig { void }
+  def release_overlay_base_mutation_lease!
+    lease = @overlay_base_mutation_lease
+    return if lease.nil?
+
+    @overlay_base_mutation_lease = nil
+    Homebrew::Overlay.release_base_mutation_lease(lease)
+  end
+
+  sig { void }
   def finish
     return if only_deps?
 
@@ -1223,6 +1236,7 @@ on_request: installed_on_request?, options:)
     raise
   ensure
     restore_overlay_failure_scope!
+    release_overlay_base_mutation_lease!
     unlock
   end
 

@@ -111,6 +111,7 @@ RSpec.describe FormulaInstaller do
       installer = described_class.new(formula)
       generation = "a" * 64
       mutation_active = false
+      base_lease = instance_double(File)
 
       allow(installer).to receive_messages(
         check_conflicts: nil,
@@ -123,12 +124,14 @@ RSpec.describe FormulaInstaller do
       allow(Homebrew::EnvConfig).to receive(:overlay?).and_return(true)
       allow(Homebrew::Overlay).to receive_messages(
         active?:                       true,
+        acquire_base_mutation_lease:   base_lease,
         begin_formula_transaction:     nil,
         current_base_generation:       generation,
         local_keg_realization?:        false,
         validate_local_install_target!: nil,
       )
       allow(Homebrew::Overlay).to receive(:mutation_active?) { mutation_active }
+      allow(Homebrew::Overlay).to receive(:release_base_mutation_lease).with(base_lease)
       allow(formula).to receive(:deprecated_flags).and_raise("failed before creating a keg")
 
       expect(Homebrew::Overlay).to receive(:begin_mutation!).ordered do

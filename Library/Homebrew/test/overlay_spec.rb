@@ -28,6 +28,7 @@ RSpec.describe Homebrew::Overlay do
     allow(described_class).to receive(:sync!)
     allow(described_class).to receive(:verify_base_generation!)
     described_class.clear_caches!
+    described_class.instance_variable_set(:@atomic_exchange_supported, false)
     Formula.clear_cache
     Keg.clear_cache
   end
@@ -60,7 +61,7 @@ RSpec.describe Homebrew::Overlay do
     expect(described_class.local_realizations?("foo")).to be(false)
   end
 
-  it "resolves double-hop inherited opt and linked keg records" do
+  it "resolves state-authorized double-hop inherited opt and linked keg records" do
     base_keg = add_base_formula("foo", "1.0")
     base_opt = base_prefix/"opt/foo"
     base_linked = base_prefix/"var/homebrew/linked/foo"
@@ -72,9 +73,57 @@ RSpec.describe Homebrew::Overlay do
     FileUtils.ln_s(base_keg, base_linked)
     FileUtils.ln_s(base_opt, user_opt)
     FileUtils.ln_s(base_linked, user_linked)
+    state_file = prefix/"var/homebrew/overlay/view.state"
+    state_file.binwrite("opt/foo\0#{base_opt}\0var/homebrew/linked/foo\0#{base_linked}\0")
+    state_file.chmod 0600
+    described_class.clear_caches!
 
-    expect(Keg.new(user_opt.resolved_path).to_path).to eq(base_keg.to_s)
-    expect(Keg.new(user_linked.resolved_path).to_path).to eq(base_keg.to_s)
+    keg = Keg.new(base_keg)
+    expect(described_class.keg_record_target(user_opt)).to eq(base_keg)
+    expect(described_class.keg_record_target(user_linked)).to eq(base_keg)
+    expect(keg).to be_optlinked
+    expect(keg).to be_linked
+  end
+
+  it "does not fully resolve an unmanaged user keg record" do
+    base_keg = add_base_formula("foo", "1.0")
+    intermediate = prefix/"unmanaged-intermediate"
+    record = prefix/"opt/foo"
+    record.dirname.mkpath
+    FileUtils.ln_s(base_keg, intermediate)
+    FileUtils.ln_s(intermediate, record)
+
+    expect(described_class.keg_record_target(record)).to eq(intermediate)
+  end
+
+  it "holds a descriptor-bound shared lease on the administrator mutation lock" do
+    lock = base_prefix/"var/homebrew/locks/overlay-mutation.lock"
+    lock.dirname.mkpath
+    lock.write("")
+    lock.chmod 0640
+
+    lease = described_class.acquire_base_mutation_lease
+    expect(system("flock", "-xn", lock.to_s, "-c", "true", out: File::NULL, err: File::NULL)).to be(false)
+    described_class.release_base_mutation_lease(lease)
+    expect(system("flock", "-xn", lock.to_s, "-c", "true", out: File::NULL, err: File::NULL)).to be(true)
+  end
+
+  it "probes atomic exchange on the active Cellar before inherited replacement" do
+    mutation_active = false
+    allow(described_class).to receive(:mutation_active?) { mutation_active }
+    expect(described_class).to receive(:begin_mutation!) { mutation_active = true }
+    expect(described_class).to receive(:sync!).with(mutation: true) { mutation_active = false }
+    expect(described_class).to receive(:atomic_exchange!).twice do |left, right|
+      temporary = left.parent/"exchange-temporary"
+      left.rename(temporary)
+      right.rename(left)
+      temporary.rename(right)
+    end
+
+    described_class.ensure_atomic_exchange_supported!
+    expect(described_class.instance_variable_get(:@atomic_exchange_supported)).to be(true)
+    expect(user_cellar/".homebrew-overlay-staging").to be_a_directory
+    expect((user_cellar/".homebrew-overlay-staging").children).to be_empty
   end
 
   it "builds an inherited replacement in a staging rack" do

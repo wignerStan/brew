@@ -86,13 +86,26 @@ module Homebrew
         link_keg = install_context.link_keg
         verbose = formula_installer.verbose?
         inherited_keg = T.let(!keg.nil? && Homebrew::Overlay.inherited_keg?(keg.to_path), T::Boolean)
+        overlay_backup = T.let(nil, T.nilable(Homebrew::Overlay::ReinstallBackup))
+        overlay_mutation_started = T.let(false, T::Boolean)
 
         formula_installer.check_installation_already_attempted
 
         oh1 "Reinstalling #{Formatter.identifier(formula.full_name)} #{options.to_a.join " "}"
 
         if keg
-          inherited_keg ? keg.unlink : backup(keg)
+          if inherited_keg
+            keg.unlink
+          elsif Homebrew::Overlay.active?
+            unless Homebrew::Overlay.mutation_active?
+              Homebrew::Overlay.begin_mutation!
+              overlay_mutation_started = true
+            end
+            keg.unlink
+            overlay_backup = Homebrew::Overlay::ReinstallBackup.new(Pathname(keg.to_path)).start!
+          else
+            backup(keg)
+          end
         end
         formula_installer.install
         formula_installer.finish
@@ -106,13 +119,29 @@ module Homebrew
             # inherited opt/linked records when failure occurred before the
             # transaction started.
             Homebrew::Overlay.sync!
-          elsif keg
+          elsif overlay_backup
+            if overlay_backup.committed_replacement?
+              # The durable package boundary has already been crossed. Keep the
+              # new private keg and discard the old backup rather than restoring
+              # it beneath non-reversible link or post-install side effects.
+              overlay_backup.discard!
+              Homebrew::Overlay.sync!(mutation: true) if Homebrew::Overlay.mutation_active?
+            else
+              overlay_backup.restore!
+              keg.link(verbose:) if keg && link_keg
+            end
+          elsif keg && !Homebrew::Overlay.active?
             restore_backup(keg, link_keg, verbose:)
+          elsif overlay_mutation_started && Homebrew::Overlay.mutation_active?
+            Homebrew::Overlay.sync!(mutation: true)
           end
         end
         raise
       else
-        if keg && !inherited_keg
+        if overlay_backup
+          overlay_backup.discard!
+          Homebrew::Overlay.sync!(mutation: true) if Homebrew::Overlay.mutation_active?
+        elsif keg && !inherited_keg
           backup_keg = backup_path(keg)
           begin
             FileUtils.rm_r(backup_keg) if backup_keg.exist?

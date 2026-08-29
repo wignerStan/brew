@@ -2169,6 +2169,224 @@ homebrew-overlay-recover-formula-transactions() {
   # every read-only command adds filesystem churn and reopens avoidable races.
 }
 
+# Recover a killed private reinstall. A live Ruby owner holds owner.lock and is
+# left alone, including when its own child synchronizer commits the replacement.
+# After the owner exits, a durable replacement marker wins; otherwise the old
+# private keg is restored from the hidden backup.
+homebrew-overlay-recover-reinstall-backups() {
+  local prefix="$1"
+  local base_prefix="$2"
+  local failed_parent="${prefix}/Cellar/.homebrew-overlay-failed"
+  local root id owner_lock owner_fd formula version state backup_rack backup_version
+  local local_rack final_version base_rack base_version marker generation target
+  local backup_present=0 metadata_complete=0 committed=0
+  local -a roots=()
+
+  HOMEBREW_OVERLAY_REINSTALL_RECOVERED=0
+  homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+  roots=("${failed_parent}"/reinstall-*)
+  for root in "${roots[@]}"
+  do
+    [[ -e "${root}" || -L "${root}" ]] || continue
+    id="${root##*/}"
+    [[ "${id}" =~ ^reinstall-[1-9][0-9]*-[0-9a-f]{16}$ ]] || {
+      echo "Error: invalid overlay reinstall control path: ${root}" >&2
+      return 1
+    }
+    [[ -d "${root}" && ! -L "${root}" && -O "${root}" ]] || {
+      echo "Error: unsafe overlay reinstall control path: ${root}" >&2
+      return 1
+    }
+
+    owner_lock="${root}/owner.lock"
+    if [[ ! -e "${owner_lock}" && ! -L "${owner_lock}" ]]
+    then
+      # A process may die after creating the private root but before publishing
+      # any metadata or backup. Only an actually empty root is discardable.
+      if [[ -z "$(find "${root}" -mindepth 1 -print -quit)" ]]
+      then
+        homebrew-overlay-remove-tree-durable "${root}" || return 1
+        HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+        continue
+      fi
+      echo "Error: incomplete overlay reinstall control path: ${root}" >&2
+      return 1
+    fi
+    homebrew-overlay-lock-path-valid "${owner_lock}" "${EUID}" || {
+      echo "Error: unsafe overlay reinstall owner lock: ${owner_lock}" >&2
+      return 1
+    }
+    exec {owner_fd}<>"${owner_lock}" || return 1
+    homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+      exec {owner_fd}>&-
+      return 1
+    }
+    if ! flock -x -n "${owner_fd}"
+    then
+      exec {owner_fd}>&-
+      continue
+    fi
+
+    metadata_complete=0
+    if [[ -f "${root}/formula" && ! -L "${root}/formula" &&
+          -f "${root}/version" && ! -L "${root}/version" &&
+          -f "${root}/state" && ! -L "${root}/state" ]]
+    then
+      formula="$(homebrew-overlay-read-owned-line "${root}/formula")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      version="$(homebrew-overlay-read-owned-line "${root}/version")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      state="$(homebrew-overlay-read-owned-line "${root}/state")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      homebrew-overlay-formula-name-valid "${formula}" || {
+        echo "Error: invalid overlay reinstall formula: ${root}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      homebrew-overlay-valid-relative-path "${version}" && [[ "${version}" != */* ]] || {
+        echo "Error: invalid overlay reinstall version: ${root}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      [[ "${state}" == prepared || "${state}" == backed-up ]] || {
+        echo "Error: invalid overlay reinstall state '${state}': ${root}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      metadata_complete=1
+    fi
+
+    backup_present=0
+    if [[ "${metadata_complete}" -eq 1 ]]
+    then
+      backup_rack="${root}/backup/${formula}"
+      backup_version="${backup_rack}/${version}"
+      [[ -d "${backup_version}" && ! -L "${backup_version}" && -O "${backup_version}" ]] && backup_present=1
+    elif [[ -e "${root}/backup" || -L "${root}/backup" ]]
+    then
+      echo "Error: overlay reinstall backup has incomplete metadata: ${root}" >&2
+      exec {owner_fd}>&-
+      return 1
+    fi
+
+    if [[ "${backup_present}" -eq 0 ]]
+    then
+      if [[ "${metadata_complete}" -eq 0 || "${state}" == prepared ]]
+      then
+        homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+          exec {owner_fd}>&-
+          return 1
+        }
+        homebrew-overlay-remove-tree-durable "${root}" || return 1
+        exec {owner_fd}>&-
+        HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+        continue
+      fi
+      echo "Error: overlay reinstall backup is missing: ${root}" >&2
+      exec {owner_fd}>&-
+      return 1
+    fi
+
+    local_rack="${prefix}/Cellar/${formula}"
+    final_version="${local_rack}/${version}"
+    base_rack="${base_prefix}/Cellar/${formula}"
+    base_version="${base_rack}/${version}"
+    committed=0
+    if [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]]
+    then
+      marker="${final_version}/.brew-overlay-base-generation"
+      if [[ -f "${marker}" && ! -L "${marker}" ]]
+      then
+        generation="$(homebrew-overlay-read-line "${marker}" "${EUID}" 65)" || {
+          echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+        homebrew-overlay-base-generation-valid "${generation}" || {
+          echo "Error: invalid committed overlay reinstall marker: ${marker}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+        committed=1
+      fi
+    fi
+
+    if [[ "${committed}" -eq 1 ]]
+    then
+      homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      homebrew-overlay-remove-tree-durable "${root}" || return 1
+      exec {owner_fd}>&-
+      HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+      continue
+    fi
+
+    if [[ -L "${local_rack}" ]]
+    then
+      target="$(readlink -- "${local_rack}")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      [[ "${target}" == "${base_rack}" ]] || {
+        echo "Error: unsafe rack blocks overlay reinstall recovery: ${local_rack}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      rm -f -- "${local_rack}" || return 1
+      homebrew-overlay-safe-mkdir "${prefix}" "${local_rack}" || return 1
+    elif [[ ! -e "${local_rack}" ]]
+    then
+      homebrew-overlay-safe-mkdir "${prefix}" "${local_rack}" || return 1
+    elif [[ ! -d "${local_rack}" || ! -O "${local_rack}" ]]
+    then
+      echo "Error: unsafe rack blocks overlay reinstall recovery: ${local_rack}" >&2
+      exec {owner_fd}>&-
+      return 1
+    fi
+
+    if [[ -L "${final_version}" ]]
+    then
+      target="$(readlink -- "${final_version}")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      [[ "${target}" == "${base_version}" ]] || {
+        echo "Error: unsafe version blocks overlay reinstall recovery: ${final_version}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      rm -f -- "${final_version}" || return 1
+    elif [[ -e "${final_version}" ]]
+    then
+      [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]] || {
+        echo "Error: unsafe version blocks overlay reinstall recovery: ${final_version}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      homebrew-overlay-remove-version-links "${prefix}" "${final_version}" || return 1
+      homebrew-overlay-remove-tree-durable "${final_version}" || return 1
+    fi
+
+    homebrew-overlay-move-durable "${backup_version}" "${final_version}" || return 1
+    homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+      exec {owner_fd}>&-
+      return 1
+    }
+    homebrew-overlay-remove-tree-durable "${root}" || return 1
+    exec {owner_fd}>&-
+    echo "Warning: recovered interrupted overlay reinstall of ${formula}; run 'brew link ${formula}' if it was previously linked." >&2
+    HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+  done
+}
+
 homebrew-overlay-sync-unlocked() {
   local force="${1:-0}"
   local prefix configured_base base_prefix state_dir state_file stamp_file
@@ -2204,6 +2422,7 @@ homebrew-overlay-sync-unlocked() {
     echo "Error: another Homebrew overlay formula transaction is still active; retry after it finishes" >&2
     return 1
   fi
+  homebrew-overlay-recover-reinstall-backups "${prefix}" "${base_prefix}" || return 1
   homebrew-overlay-recover-sync "${prefix}" "${base_prefix}" || return 1
 
   if [[ "${HOMEBREW_OVERLAY_FORMULA_RECOVERED:-0}" -eq 1 ]]
@@ -2211,6 +2430,10 @@ homebrew-overlay-sync-unlocked() {
     force=1
   fi
   if [[ "${HOMEBREW_OVERLAY_SYNC_RECOVERED:-0}" -eq 1 ]]
+  then
+    force=1
+  fi
+  if [[ "${HOMEBREW_OVERLAY_REINSTALL_RECOVERED:-0}" -eq 1 ]]
   then
     force=1
   fi
@@ -2419,6 +2642,11 @@ homebrew-overlay-sync() {
 
 homebrew-overlay-bootstrap() {
   homebrew-overlay-truthy "${HOMEBREW_OVERLAY:-}" || return 0
+
+  [[ "$(uname -s)" == Linux ]] || {
+    echo "Error: native Homebrew overlays are supported only on Linux" >&2
+    return 1
+  }
 
   command -v flock >/dev/null 2>&1 || {
     echo "Error: active Homebrew overlays require flock from util-linux" >&2
