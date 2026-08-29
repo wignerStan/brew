@@ -48,6 +48,21 @@ jobs:
               p.write_text(text.replace(old, new, count))
 
           replace(
+              "Library/Homebrew/overlay.rb",
+              '    def self.clear_caches!\n'
+              '      T.unsafe(::Formula).clear_cache if defined?(::Formula)\n'
+              '      T.unsafe(::Keg).clear_cache if defined?(::Keg)\n'
+              '      @link_state_entries = nil\n'
+              '    end\n',
+              '    def self.clear_caches!\n'
+              '      T.unsafe(::Formula).clear_cache if defined?(::Formula)\n'
+              '      T.unsafe(::Keg).clear_cache if defined?(::Keg)\n'
+              '      @link_state_entries = nil\n'
+              '      @atomic_exchange_supported = false\n'
+              '    end\n',
+          )
+
+          replace(
               "Library/Homebrew/test/overlay_spec.rb",
               '    stub_const("HOMEBREW_CELLAR", user_cellar)\n',
               '    stub_const("HOMEBREW_CELLAR", user_cellar)\n'
@@ -56,13 +71,31 @@ jobs:
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
               '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n',
-              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n'
               '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
               '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
               '      left.rename(temporary)\n'
               '      right.rename(left)\n'
               '      temporary.rename(right)\n'
               '    end\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '  after do\n'
+              '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
+              '  end\n',
+              '  after do\n'
+              '    # Test cleanup deliberately invokes the private lock release without publishing a generation.\n'
+              '    # rubocop:disable Homebrew/NoSendInTests\n'
+              '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
+              '    # rubocop:enable Homebrew/NoSendInTests\n'
+              '  end\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    described_class.ensure_atomic_exchange_supported!\n'
+              '    expect(described_class.instance_variable_get(:@atomic_exchange_supported)).to be(true)\n',
+              '    described_class.ensure_atomic_exchange_supported!\n'
+              '    described_class.ensure_atomic_exchange_supported!\n',
           )
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
@@ -77,6 +110,31 @@ jobs:
               '      right.rename(left)\n'
               '      temporary.rename(right)\n'
               '    end\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    transaction.commit!\n\n'
+              '    expect(user_cellar/"foo/2.0/.brew-overlay-transaction").not_to exist\n',
+              '    expect(described_class).to receive(:sync!)\n'
+              '    transaction.commit!\n\n'
+              '    expect(user_cellar/"foo/2.0/.brew-overlay-transaction").not_to exist\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    expect(transaction.replacement_rack).not_to exist\n'
+              '    expect(described_class).to have_received(:sync!)\n',
+              '    expect(transaction.replacement_rack).not_to exist\n',
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              '    expect(described_class.discard_local_keg!("foo", "2.0")).to be(true)\n'
+              '    expect(local_keg).not_to exist\n'
+              '    expect(base_keg).to exist\n'
+              '    expect(described_class).to have_received(:sync!)\n',
+              '    expect(described_class).to receive(:sync!)\n'
+              '    expect(described_class.discard_local_keg!("foo", "2.0")).to be(true)\n'
+              '    expect(local_keg).not_to exist\n'
+              '    expect(base_keg).to exist\n',
           )
 
           replace(
@@ -142,12 +200,21 @@ jobs:
           )
           PY
 
-          git diff --check
-          git diff -- Library/Homebrew/test/overlay_spec.rb \
+          bin/brew style --fix \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
             Library/Homebrew/test/formula_pin_spec.rb \
             Library/Homebrew/test/cmd/link_spec.rb
+          bin/brew style \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/test/overlay_spec.rb \
+            Library/Homebrew/test/uninstall_spec.rb \
+            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
+            Library/Homebrew/test/formula_pin_spec.rb \
+            Library/Homebrew/test/cmd/link_spec.rb
+          git diff --check
 
       - name: Run previously failing specs
         shell: bash
@@ -173,6 +240,7 @@ jobs:
         run: |
           set -euo pipefail
           bin/brew style \
+            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
@@ -180,13 +248,14 @@ jobs:
             Library/Homebrew/test/cmd/link_spec.rb
           bin/brew typecheck
 
-      - name: Commit exact validated fixture fixes
+      - name: Commit exact validated fixes
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "OpenAI"
           git config user.email "openai@example.invalid"
           git add \
+            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
             Library/Homebrew/test/uninstall_spec.rb \
             Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
