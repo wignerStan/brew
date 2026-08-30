@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "ab625c16d06493b79d0eff797e3ea5c72aac99b1"
-          test "$(git rev-parse overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
+          test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
 
       - name: Apply validated test fixture and typing fixes
         shell: bash
@@ -246,7 +246,7 @@ jobs:
           set -e
           test "$candidate_status" -ne 0
 
-          git worktree add --detach "$RUNNER_TEMP/overlay-store" overlay-store
+          git worktree add --detach "$RUNNER_TEMP/overlay-store" origin/overlay-store
           set +e
           (
             cd "$RUNNER_TEMP/overlay-store"
