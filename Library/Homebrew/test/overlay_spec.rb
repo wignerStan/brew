@@ -20,6 +20,7 @@ RSpec.describe Homebrew::Overlay do
 
     stub_const("HOMEBREW_PREFIX", prefix)
     stub_const("HOMEBREW_CELLAR", user_cellar)
+    stub_const("HOMEBREW_LINKED_KEGS", prefix/"var/homebrew/linked")
     allow(Homebrew::EnvConfig).to receive_messages(
       overlay?:            true,
       overlay_active?:     true,
@@ -28,13 +29,25 @@ RSpec.describe Homebrew::Overlay do
     allow(described_class).to receive(:sync!)
     allow(described_class).to receive(:verify_base_generation!)
     described_class.clear_caches!
+    # Reset the process-local exchange cache so each example probes independently.
+    # rubocop:disable Homebrew/NoInstanceVariableAccessInTests
     described_class.instance_variable_set(:@atomic_exchange_supported, false)
+    # rubocop:enable Homebrew/NoInstanceVariableAccessInTests
+    allow(described_class).to receive(:atomic_exchange!) do |left, right|
+      temporary = left.parent/".homebrew-overlay-rspec-exchange"
+      left.rename(temporary)
+      right.rename(left)
+      temporary.rename(right)
+    end
     Formula.clear_cache
     Keg.clear_cache
   end
 
   after do
+    # Teardown must release the private lock without publishing a generation.
+    # rubocop:disable Homebrew/NoSendInTests
     described_class.send(:release_mutation_lock!) if described_class.mutation_active?
+    # rubocop:enable Homebrew/NoSendInTests
   end
 
   def add_base_formula(name, version)
@@ -42,7 +55,7 @@ RSpec.describe Homebrew::Overlay do
     (keg/"bin").mkpath
     (keg/"bin"/name).write("base\n")
     rack = user_cellar/name
-    FileUtils.ln_s(base_cellar/name, rack) unless rack.exist? || rack.symlink?
+    FileUtils.ln_s(base_cellar/name, rack) if !rack.exist? && !rack.symlink?
     keg
   end
 
@@ -109,7 +122,7 @@ RSpec.describe Homebrew::Overlay do
   end
 
   it "probes atomic exchange on the active Cellar before inherited replacement" do
-    mutation_active = false
+    mutation_active = T.let(false, T::Boolean)
     allow(described_class).to receive(:mutation_active?) { mutation_active }
     expect(described_class).to receive(:begin_mutation!) { mutation_active = true }
     expect(described_class).to receive(:sync!).with(mutation: true) { mutation_active = false }
@@ -121,7 +134,7 @@ RSpec.describe Homebrew::Overlay do
     end
 
     described_class.ensure_atomic_exchange_supported!
-    expect(described_class.instance_variable_get(:@atomic_exchange_supported)).to be(true)
+    described_class.ensure_atomic_exchange_supported!
     expect(user_cellar/".homebrew-overlay-staging").to be_a_directory
     expect((user_cellar/".homebrew-overlay-staging").children).to be_empty
   end
@@ -217,13 +230,13 @@ RSpec.describe Homebrew::Overlay do
     expect((user_cellar/"foo/2.0/bin/foo").read).to eq("prefix=#{user_cellar}/foo/2.0\n")
     expect((user_cellar/"foo/2.0/absolute-link").readlink.to_s).to eq((user_cellar/"foo/2.0/bin/foo").to_s)
 
+    expect(described_class).to receive(:sync!)
     transaction.commit!
 
     expect(user_cellar/"foo/2.0/.brew-overlay-transaction").not_to exist
     expect((user_cellar/"foo/2.0/.brew-overlay-base-generation").read).to eq("#{base_generation}\n")
     expect(transaction.transaction_dir).not_to exist
     expect(transaction.replacement_rack).not_to exist
-    expect(described_class).to have_received(:sync!)
   end
 
   it "persists transaction publication metadata before advancing journal states" do
@@ -248,9 +261,12 @@ RSpec.describe Homebrew::Overlay do
       events << [:fsync_tree, path]
       original.call(path)
     end
-    allow(described_class).to receive(:atomic_exchange!).and_wrap_original do |original, *paths|
-      events << [:exchange, *paths]
-      original.call(*paths)
+    allow(described_class).to receive(:atomic_exchange!) do |left, right|
+      events << [:exchange, left, right]
+      temporary = left.parent/".homebrew-overlay-rspec-exchange"
+      left.rename(temporary)
+      right.rename(left)
+      temporary.rename(right)
     end
     allow(described_class).to receive(:durable_unlink!).and_wrap_original do |original, path|
       events << [:unlink, path]
@@ -401,10 +417,10 @@ RSpec.describe Homebrew::Overlay do
     (local_keg/"payload").write("local
 ")
 
+    expect(described_class).to receive(:sync!)
     expect(described_class.discard_local_keg!("foo", "2.0")).to be(true)
     expect(local_keg).not_to exist
     expect(base_keg).to exist
-    expect(described_class).to have_received(:sync!)
   end
 
   it "never discards an inherited keg" do
@@ -576,7 +592,7 @@ RSpec.describe Homebrew::Overlay do
     end
     expect(Homebrew).to receive(:safe_system).ordered do |environment, command, path, action, argument, **options|
       expect(environment).to include(
-        "HOMEBREW_OVERLAY_MUTATION_LOCK_FD" => descriptor.to_s,
+        "HOMEBREW_OVERLAY_MUTATION_LOCK_FD"  => descriptor.to_s,
         "HOMEBREW_OVERLAY_FINALIZE_MUTATION" => "1",
       )
       expect([command, path, action, argument]).to eq(["/bin/bash", script, "--bump-generation", prefix.to_s])

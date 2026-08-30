@@ -48,7 +48,7 @@ RSpec.describe FormulaPin do
     HOMEBREW_PINNED_KEGS.mkpath
     (HOMEBREW_PINNED_KEGS/name).make_relative_symlink(formula.rack/"missing")
 
-    expect(formula_pin).to be_stale
+    expect(formula_pin.stale?).to be(true)
     expect(formula_pin).not_to be_pinned
 
     formula_pin.pin
@@ -90,7 +90,7 @@ RSpec.describe FormulaPin do
       Pathname(path) == inherited_keg
     end
 
-    expect(formula_pin).to be_stale
+    expect(formula_pin.stale?).to be(true)
     expect(formula_pin).not_to be_pinned
 
     formula_pin.pin
@@ -106,7 +106,7 @@ RSpec.describe FormulaPin do
     local_keg.mkpath
     inherited_keg.mkpath
     inherited_paths = [inherited_keg]
-    allow(Homebrew::Overlay).to receive(:active?).and_return(true)
+    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: HOMEBREW_PREFIX/"base")
     allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|
       inherited_paths.include?(Pathname(path))
     end

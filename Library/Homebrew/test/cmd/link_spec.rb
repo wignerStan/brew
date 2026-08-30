@@ -23,7 +23,13 @@ RSpec.describe Homebrew::Cmd::Link do
       T.bind(self, T.class_of(Formula))
       url "foo-1.0"
     end
-    keg = instance_double(Keg, rack: HOMEBREW_CELLAR/"testball", linked?: false, name: "testball")
+    keg = instance_double(
+      Keg,
+      rack:    HOMEBREW_CELLAR/"testball",
+      linked?: false,
+      name:    "testball",
+      to_path: HOMEBREW_CELLAR/"testball/1.0",
+    )
 
     cmd = described_class.new(["testball"])
     allow(cmd.args.named).to receive(:to_latest_kegs).and_return([keg])
@@ -71,6 +77,7 @@ RSpec.describe Homebrew::Cmd::Link do
         linked?:    false,
         name:       formula_name,
         to_formula: test_formula,
+        to_path:    HOMEBREW_CELLAR/formula_name/"1.0",
         to_s:       "#{formula_name}/1.0",
       )
       cmd = described_class.new([formula_name])
