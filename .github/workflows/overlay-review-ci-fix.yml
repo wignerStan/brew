@@ -1,4 +1,4 @@
-name: Preview safe overlay style autocorrections
+name: Validate final overlay review fixes
 
 on:
   push:
@@ -6,6 +6,472 @@ on:
       - automation/overlay-review-ci-fix
     paths:
       - .github/workflows/overlay-review-ci-fix.yml
+
+permissions:
+  contents: write
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out exact reviewed head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: fix/overlay-review-hardening
+          fetch-depth: 0
+
+      - name: Verify exact source and target base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
+          test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
+
+      - name: Apply reviewed style, type, and workflow fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
+              p.write_text(text.replace(old, new, count))
+
+          replace(
+              "Library/Homebrew/formula_installer.rb",
+              "        base_generation: T.must(@overlay_base_generation),\n",
+              "        base_generation: @overlay_base_generation,\n",
+          )
+          replace(
+              "Library/Homebrew/formula_pin.rb",
+              "    return false unless path.symlink? && path.exist?\n",
+              "    return false unless path.symlink?\n"
+              "    return false unless path.exist?\n",
+          )
+          replace(
+              "Library/Homebrew/install.rb",
+              "            inherited_link = false\n",
+              "            inherited_link = T.let(false, T::Boolean)\n",
+          )
+
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "    MAX_MANAGED_STATE_BYTES = 64 * 1024 * 1024\n",
+              "    MAX_MANAGED_STATE_BYTES = T.let(64 * 1024 * 1024, Integer)\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "    class ReinstallBackup\n      extend T::Sig\n\n",
+              "    class ReinstallBackup\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        unless Overlay.local_keg_realization?(@formula_name, @version) &&\n"
+              "               keg_path.stat.uid == Process.uid\n"
+              "          raise TransactionFailure, \"refusing to back up a non-local overlay keg: #{keg_path}\"\n"
+              "        end\n",
+              "        safe_keg = Overlay.local_keg_realization?(@formula_name, @version) &&\n"
+              "                   keg_path.stat.uid == Process.uid\n"
+              "        raise TransactionFailure, \"refusing to back up a non-local overlay keg: #{keg_path}\" unless safe_keg\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "      rescue Exception # rubocop:disable Lint/RescueException\n",
+              "      # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.\n"
+              "      rescue Exception # rubocop:disable Lint/RescueException\n",
+              count=1,
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "          unless @final_version.readlink == expected\n"
+              "            raise TransactionFailure, \"refusing to replace an unexpected overlay reinstall target: #{@final_version}\"\n"
+              "          end\n"
+              "          @final_version.unlink\n",
+              "          if @final_version.readlink != expected\n"
+              "            raise TransactionFailure, \"refusing to replace an unexpected overlay reinstall target: #{@final_version}\"\n"
+              "          end\n\n"
+              "          @final_version.unlink\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "          unless @final_version.directory? && @final_version.stat.uid == Process.uid\n"
+              "            raise TransactionFailure, \"refusing to replace an unsafe overlay reinstall target: #{@final_version}\"\n"
+              "          end\n"
+              "          Overlay.remove_links_to!(@final_version)\n",
+              "          safe_final_version = @final_version.directory? && @final_version.stat.uid == Process.uid\n"
+              "          unless safe_final_version\n"
+              "            raise TransactionFailure, \"refusing to replace an unsafe overlay reinstall target: #{@final_version}\"\n"
+              "          end\n\n"
+              "          Overlay.remove_links_to!(@final_version)\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        lock = File.open(@owner_lock_path, flags, 0600)\n"
+              "        lock.close_on_exec = true\n"
+              "        stat = lock.stat\n"
+              "        unless stat.file? && stat.uid == Process.uid && stat.nlink == 1 &&\n"
+              "               lock.flock(File::LOCK_EX | File::LOCK_NB)\n"
+              "          lock.close\n"
+              "          raise TransactionFailure, \"could not acquire overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n",
+              "        # This descriptor is intentionally retained until the reinstall backup is finalized.\n"
+              "        # rubocop:disable Style/AutoResourceCleanup, Style/FileOpen\n"
+              "        lock = File.open(@owner_lock_path, flags, 0600)\n"
+              "        # rubocop:enable Style/AutoResourceCleanup, Style/FileOpen\n"
+              "        lock.close_on_exec = true\n"
+              "        stat = lock.stat\n"
+              "        safe_lock = stat.file? && stat.uid == Process.uid && stat.nlink == 1\n"
+              "        unless safe_lock\n"
+              "          lock.close\n"
+              "          raise TransactionFailure, \"could not acquire overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n"
+              "        unless lock.flock(File::LOCK_EX | File::LOCK_NB)\n"
+              "          lock.close\n"
+              "          raise TransactionFailure, \"could not acquire overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        if lock.nil? || lock.closed? || @owner_lock_path.symlink? || !@owner_lock_path.file?\n"
+              "          raise TransactionFailure, \"unsafe overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n"
+              "        descriptor_stat = lock.stat\n",
+              "        if lock.nil? || lock.closed? || @owner_lock_path.symlink? || !@owner_lock_path.file?\n"
+              "          raise TransactionFailure, \"unsafe overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n\n"
+              "        descriptor_stat = lock.stat\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        unless descriptor_stat.file? && descriptor_stat.uid == Process.uid && descriptor_stat.nlink == 1 &&\n"
+              "               path_stat.file? && path_stat.uid == Process.uid && path_stat.nlink == 1 &&\n"
+              "               descriptor_stat.dev == path_stat.dev && descriptor_stat.ino == path_stat.ino\n"
+              "          raise TransactionFailure, \"changed overlay reinstall owner lock: #{@owner_lock_path}\"\n"
+              "        end\n",
+              "        safe_lock = descriptor_stat.file? && descriptor_stat.uid == Process.uid && descriptor_stat.nlink == 1 &&\n"
+              "                    path_stat.file? && path_stat.uid == Process.uid && path_stat.nlink == 1 &&\n"
+              "                    descriptor_stat.dev == path_stat.dev && descriptor_stat.ino == path_stat.ino\n"
+              "        raise TransactionFailure, \"changed overlay reinstall owner lock: #{@owner_lock_path}\" unless safe_lock\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        unless formula == \"#{formula_name}\\n\" && recorded_version == \"#{version}\\n\" &&\n"
+              "               [\"prepared\\n\", \"backed-up\\n\"].include?(state)\n"
+              "          raise TransactionFailure, \"invalid overlay reinstall metadata: #{@root}\"\n"
+              "        end\n"
+              "        unless backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid\n"
+              "          raise TransactionFailure, \"overlay reinstall backup is unavailable: #{backup_version}\"\n"
+              "        end\n",
+              "        valid_metadata = formula == \"#{formula_name}\\n\" && recorded_version == \"#{version}\\n\" &&\n"
+              "                         [\"prepared\\n\", \"backed-up\\n\"].include?(state)\n"
+              "        raise TransactionFailure, \"invalid overlay reinstall metadata: #{@root}\" unless valid_metadata\n\n"
+              "        safe_backup = backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid\n"
+              "        raise TransactionFailure, \"overlay reinstall backup is unavailable: #{backup_version}\" unless safe_backup\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "          unless @final_rack.readlink == expected_base_rack\n"
+              "            raise TransactionFailure, \"refusing to replace a non-inherited formula rack: #{@final_rack}\"\n"
+              "          end\n"
+              "          @final_rack.unlink\n",
+              "          if @final_rack.readlink != expected_base_rack\n"
+              "            raise TransactionFailure, \"refusing to replace a non-inherited formula rack: #{@final_rack}\"\n"
+              "          end\n\n"
+              "          @final_rack.unlink\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        return unless @root.exist? || @root.symlink?\n\n"
+              "        parent = @root.parent\n"
+              "        unless @root.directory? && !@root.symlink? && @root.stat.uid == Process.uid\n"
+              "          raise TransactionFailure, \"unsafe overlay reinstall control path: #{@root}\"\n"
+              "        end\n"
+              "        FileUtils.rm_rf(@root)\n"
+              "        if @root.exist? || @root.symlink?\n"
+              "          raise TransactionFailure, \"could not remove overlay reinstall control path: #{@root}\"\n"
+              "        end\n"
+              "        Overlay.fsync_directory!(parent)\n",
+              "        managed_root = @root.exist? || @root.symlink?\n"
+              "        return unless managed_root\n\n"
+              "        parent = @root.parent\n"
+              "        safe_root = @root.directory? && !@root.symlink? && @root.stat.uid == Process.uid\n"
+              "        raise TransactionFailure, \"unsafe overlay reinstall control path: #{@root}\" unless safe_root\n\n"
+              "        FileUtils.rm_rf(@root)\n"
+              "        if @root.exist? || @root.symlink?\n"
+              "          raise TransactionFailure, \"could not remove overlay reinstall control path: #{@root}\"\n"
+              "        end\n\n"
+              "        Overlay.fsync_directory!(parent)\n",
+          )
+
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "    def self.inherited_install_target?(formula_name, version)\n"
+              "      return false unless active? && valid_formula_name?(formula_name) && valid_version_name?(version)\n\n"
+              "      rack = HOMEBREW_CELLAR/formula_name\n"
+              "      keg = rack/version\n"
+              "      rack.directory? && !rack.symlink? && keg.symlink? && inherited_keg?(keg)\n"
+              "    end\n",
+              "    def self.inherited_install_target?(formula_name, version)\n"
+              "      return false unless active?\n"
+              "      return false unless valid_formula_name?(formula_name)\n"
+              "      return false unless valid_version_name?(version)\n\n"
+              "      rack = HOMEBREW_CELLAR/formula_name\n"
+              "      keg = rack/version\n"
+              "      return false unless rack.directory?\n"
+              "      return false if rack.symlink?\n"
+              "      return false unless keg.symlink?\n\n"
+              "      inherited_keg?(keg)\n"
+              "    end\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "      prefix_stat = prefix.lstat\n"
+              "      unless prefix_stat.directory? && !prefix.symlink?\n"
+              "        raise TransactionFailure, \"unsafe administrator Homebrew prefix: #{prefix}\"\n"
+              "      end\n\n"
+              "      flags = File::RDONLY | File::NOFOLLOW\n"
+              "      lease = File.open(lock_path, flags)\n",
+              "      prefix_stat = prefix.lstat\n"
+              "      safe_prefix = prefix_stat.directory? && !prefix.symlink?\n"
+              "      raise TransactionFailure, \"unsafe administrator Homebrew prefix: #{prefix}\" unless safe_prefix\n\n"
+              "      flags = File::RDONLY | File::NOFOLLOW\n"
+              "      # This descriptor is intentionally returned so the caller can hold the shared lease through the build.\n"
+              "      # rubocop:disable Style/AutoResourceCleanup, Style/FileOpen\n"
+              "      lease = File.open(lock_path, flags)\n"
+              "      # rubocop:enable Style/AutoResourceCleanup, Style/FileOpen\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "                  (descriptor_stat.mode & 0022).zero? && path_stat.file? && path_stat.uid == prefix_stat.uid &&\n",
+              "                  descriptor_stat.mode.nobits?(0022) && path_stat.file? && path_stat.uid == prefix_stat.uid &&\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "      raise TransactionFailure, \"administrator Homebrew mutation lock changed while acquiring it: #{lock_path}\" unless stable_lock\n",
+              "      unless stable_lock\n"
+              "        raise TransactionFailure,\n"
+              "              \"administrator Homebrew mutation lock changed while acquiring it: #{lock_path}\"\n"
+              "      end\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        fields = contents.split(\"\\0\", -1)\n"
+              "        fields.pop\n"
+              "        unless fields.length.even? && fields.none?(&:empty?)\n"
+              "          raise TransactionFailure, \"invalid overlay view state: #{state}\"\n"
+              "        end\n\n"
+              "        fields.each_slice(2) do |relative, target|\n"
+              "          expected = expected_link_target(relative)\n",
+              "        fields = contents.split(\"\\0\", -1)\n"
+              "        fields.pop\n"
+              "        valid_fields = fields.length.even? && fields.none?(&:empty?)\n"
+              "        raise TransactionFailure, \"invalid overlay view state: #{state}\" unless valid_fields\n\n"
+              "        fields.each_slice(2) do |relative, target|\n"
+              "          relative = T.must(relative)\n"
+              "          target = T.must(target)\n"
+              "          expected = expected_link_target(relative)\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        atomic_exchange!(left, right)\n"
+              "        unless [right.stat.dev, right.stat.ino] == left_identity &&\n"
+              "               [left.stat.dev, left.stat.ino] == right_identity &&\n"
+              "               (left/\"identity\").read == \"right\\n\" && (right/\"identity\").read == \"left\\n\"\n"
+              "          raise TransactionFailure, \"atomic overlay exchange probe did not swap Cellar directories exactly\"\n"
+              "        end\n\n"
+              "        atomic_exchange!(left, right)\n"
+              "        unless [left.stat.dev, left.stat.ino] == left_identity &&\n"
+              "               [right.stat.dev, right.stat.ino] == right_identity &&\n"
+              "               (left/\"identity\").read == \"left\\n\" && (right/\"identity\").read == \"right\\n\"\n"
+              "          raise TransactionFailure, \"atomic overlay exchange probe did not restore Cellar directories exactly\"\n"
+              "        end\n",
+              "        atomic_exchange!(left, right)\n"
+              "        swapped_exactly = [right.stat.dev, right.stat.ino] == left_identity &&\n"
+              "                          [left.stat.dev, left.stat.ino] == right_identity &&\n"
+              "                          (left/\"identity\").read == \"right\\n\" && (right/\"identity\").read == \"left\\n\"\n"
+              "        unless swapped_exactly\n"
+              "          raise TransactionFailure, \"atomic overlay exchange probe did not swap Cellar directories exactly\"\n"
+              "        end\n\n"
+              "        atomic_exchange!(left, right)\n"
+              "        restored_exactly = [left.stat.dev, left.stat.ino] == left_identity &&\n"
+              "                           [right.stat.dev, right.stat.ino] == right_identity &&\n"
+              "                           (left/\"identity\").read == \"left\\n\" && (right/\"identity\").read == \"right\\n\"\n"
+              "        unless restored_exactly\n"
+              "          raise TransactionFailure, \"atomic overlay exchange probe did not restore Cellar directories exactly\"\n"
+              "        end\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "        if probe && (probe.exist? || probe.symlink?)\n"
+              "          unless probe.directory? && !probe.symlink? && probe.stat.uid == Process.uid\n"
+              "            raise TransactionFailure, \"unsafe atomic overlay exchange probe: #{probe}\"\n"
+              "          end\n"
+              "          FileUtils.rm_rf(probe)\n"
+              "          if probe.exist? || probe.symlink?\n"
+              "            raise TransactionFailure, \"could not remove atomic overlay exchange probe: #{probe}\"\n"
+              "          end\n"
+              "          fsync_directory!(parent)\n"
+              "        end\n",
+              "        if probe && (probe.exist? || probe.symlink?)\n"
+              "          safe_probe = probe.directory? && !probe.symlink? && probe.stat.uid == Process.uid\n"
+              "          raise TransactionFailure, \"unsafe atomic overlay exchange probe: #{probe}\" unless safe_probe\n\n"
+              "          FileUtils.rm_rf(probe)\n"
+              "          if probe.exist? || probe.symlink?\n"
+              "            raise TransactionFailure, \"could not remove atomic overlay exchange probe: #{probe}\"\n"
+              "          end\n\n"
+              "          fsync_directory!(parent)\n"
+              "        end\n",
+          )
+          replace(
+              "Library/Homebrew/overlay.rb",
+              "    def self.keg_record_target(path)\n"
+              "      return unless path.symlink? && path.directory?\n\n",
+              "    def self.keg_record_target(path)\n"
+              "      return unless path.symlink?\n"
+              "      return unless path.directory?\n\n",
+          )
+
+          replace(
+              "Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi",
+              "    sig { returns(T::Boolean) }\n"
+              "    def no_verify_attestations?; end\n\n"
+              "    sig { returns(String) }\n"
+              "    def pip_index_url; end\n",
+              "    sig { returns(T::Boolean) }\n"
+              "    def no_verify_attestations?; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay?; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay_active?; end\n\n"
+              "    sig { returns(T.nilable(::String)) }\n"
+              "    def overlay_base_prefix; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay_force?; end\n\n"
+              "    sig { returns(T.nilable(::String)) }\n"
+              "    def overlay_user_prefix; end\n\n"
+              "    sig { returns(String) }\n"
+              "    def pip_index_url; end\n",
+          )
+
+          replace(
+              "Library/Homebrew/test/cmd/overlay-sync_spec.rb",
+              "    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n"
+              "    allow(Homebrew::Overlay).to receive(:sync!)\n\n"
+              "    described_class.new([]).run\n\n"
+              "    expect(Homebrew::Overlay).to have_received(:sync!).once\n",
+              "    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n"
+              "    expect(Homebrew::Overlay).to receive(:sync!).once\n\n"
+              "    described_class.new([]).run\n",
+          )
+          replace(
+              "Library/Homebrew/test/cmd/overlay-sync_spec.rb",
+              "    allow(Homebrew::Overlay).to receive(:active?).and_return(false)\n"
+              "    allow(Homebrew::Overlay).to receive(:sync!)\n\n"
+              "    expect { described_class.new([]).run }\n"
+              "      .to output(/requires an active per-user Homebrew overlay/).to_stderr\n"
+              "    expect(Homebrew).to have_failed\n"
+              "    expect(Homebrew::Overlay).not_to have_received(:sync!)\n",
+              "    allow(Homebrew::Overlay).to receive(:active?).and_return(false)\n"
+              "    expect(Homebrew::Overlay).not_to receive(:sync!)\n\n"
+              "    expect { described_class.new([]).run }\n"
+              "      .to output(/requires an active per-user Homebrew overlay/).to_stderr\n"
+              "    expect(Homebrew).to have_failed\n",
+          )
+          replace(
+              "Library/Homebrew/test/formula_installer_spec.rb",
+              "        active?:                       true,\n"
+              "        acquire_base_mutation_lease:   base_lease,\n"
+              "        begin_formula_transaction:     nil,\n"
+              "        current_base_generation:       generation,\n"
+              "        local_keg_realization?:        false,\n"
+              "        validate_local_install_target!: nil,\n",
+              "        active?:                        true,\n"
+              "        acquire_base_mutation_lease:    base_lease,\n"
+              "        begin_formula_transaction:      nil,\n"
+              "        current_base_generation:        generation,\n"
+              "        local_keg_realization?:         false,\n"
+              "        validate_local_install_target!: nil,\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "# typed: strict\n",
+              "# typed: true\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "  it \"rejects a transaction marker path replaced after opening\" do\n"
+              "    add_base_formula(\"foo\", \"1.0\")\n",
+              "  it \"rejects a transaction marker path replaced after opening\" do\n"
+              "    transaction = T.let(nil, T.nilable(Homebrew::Overlay::FormulaTransaction))\n"
+              "    marker = T.let(nil, T.nilable(Pathname))\n"
+              "    opened_marker = T.let(nil, T.nilable(Pathname))\n\n"
+              "    add_base_formula(\"foo\", \"1.0\")\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    opened_marker&.rename(marker) if opened_marker&.exist?\n",
+              "    opened_marker&.rename(T.must(marker)) if opened_marker&.exist?\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    descriptor = described_class::MUTATION_LOCK_DESCRIPTOR\n",
+              "    descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR\n",
+          )
+
+          replace(
+              "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+              "python3 - \\\n  \"${repo}/.github/workflows/rebase-upstream-overlay.yml\" \\\n  \"${repo}/.github/workflows/overlay-validation.yml\" <<'PY'\n",
+              "workflow_files=(\n"
+              "  \"${repo}/.github/workflows/rebase-upstream-overlay.yml\"\n"
+              "  \"${repo}/.github/workflows/overlay-validation.yml\"\n"
+              ")\n"
+              "python3 - \"${workflow_files[@]}\" <<'PY'\n",
+          )
+          replace(
+              "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
+              "python3 - \\\n  \"${repo}/Library/Homebrew/uninstall.rb\" \\\n  \"${repo}/Library/Homebrew/cleanup.rb\" \\\n  \"${repo}/Library/Homebrew/utils/autoremove.rb\" \\\n  \"${repo}/Library/Homebrew/keg.rb\" <<'PY'\n",
+              "source_files=(\n"
+              "  \"${repo}/Library/Homebrew/uninstall.rb\"\n"
+              "  \"${repo}/Library/Homebrew/cleanup.rb\"\n"
+              "  \"${repo}/Library/Homebrew/utils/autoremove.rb\"\n"
+              "  \"${repo}/Library/Homebrew/keg.rb\"\n"
+              ")\n"
+              "python3 - \"${source_files[@]}\" <<'PY'\n",
+          )
+          replace(
+              "Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh",
+              "# shellcheck source=../../utils/overlay.sh\n"
+              "source \"${repo}/Library/Homebrew/utils/overlay.sh\"\n",
+              "# The repository root is resolved at runtime, so ShellCheck cannot follow this source statically.\n"
+              "# shellcheck disable=SC1091\n"
+              "source \"${repo}/Library/Homebrew/utils/overlay.sh\"\n",
+          )
+
+          validation = r'''name: Validate native overlay
+
+on:
+  pull_request:
+    branches:
+      - overlay-store
+    paths:
+      - '.github/workflows/**'
+      - 'Library/Homebrew/**'
+      - 'bin/brew'
+      - 'docs/Native-User-Overlay*'
+  push:
+    branches:
+      - fix/overlay-review-hardening
 
 permissions:
   contents: read
@@ -16,49 +482,449 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
-  preview:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
-      - name: Check out exact reviewed head
+      - name: Check out exact candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: fix/overlay-review-hardening
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
-      - name: Apply safe autocorrections and report remaining issues
+      - name: Fetch overlay-store comparison base
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
+          git fetch --prune origin overlay-store
+
+      - name: Check formatting and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check origin/overlay-store...HEAD
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "$test_script"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+
+      - name: Reject style offenses on overlay changes
+        shell: bash
+        run: |
+          set -euo pipefail
           mapfile -t changed < <(
             git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
               '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
           )
+          ((${#changed[@]} > 0)) || exit 0
+          patch="$RUNNER_TEMP/overlay-style.patch"
+          log="$RUNNER_TEMP/overlay-style.log"
+          git diff --unified=0 --no-color origin/overlay-store...HEAD -- "${changed[@]}" >"$patch"
           set +e
-          bin/brew style --fix "${changed[@]}" >"$RUNNER_TEMP/fix.log" 2>&1
-          fix_status=$?
-          bin/brew style --display-cop-names "${changed[@]}" >"$RUNNER_TEMP/remaining.log" 2>&1
-          remaining_status=$?
+          bin/brew style --display-cop-names "${changed[@]}" >"$log" 2>&1
+          style_status=$?
           set -e
-          echo "fix status=$fix_status remaining status=$remaining_status"
-          git diff --stat
-          echo '--- remaining relevant diagnostics ---'
-          python3 - "$RUNNER_TEMP/remaining.log" <<'PY'
+          python3 - "$patch" "$log" "$style_status" <<'PY'
+          import collections
           import re
           import sys
+
+          patch_path, log_path, status_text = sys.argv[1:]
+          ranges = collections.defaultdict(list)
+          current = None
+          hunk = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+          with open(patch_path, encoding="utf-8", errors="replace") as handle:
+              for line in handle:
+                  if line.startswith("+++ b/"):
+                      current = line[6:].rstrip("\n")
+                  elif current:
+                      match = hunk.match(line)
+                      if match:
+                          start = int(match.group(1))
+                          count = int(match.group(2) or "1")
+                          if count:
+                              ranges[current].append((start, start + count - 1))
+
+          def changed_line(path, lineno):
+              return any(start <= lineno <= end for start, end in ranges.get(path, ()))
+
           ansi = re.compile(r"\x1b\[[0-9;]*m")
-          with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+          action_error = re.compile(r"^::error file=([^,]+),line=(\d+)(?:,[^:]*)?::(.*)$")
+          plain = re.compile(r"^([^:]+):(\d+):\d+: [A-Z]: (.*)$")
+          recognized = set()
+          changed_errors = set()
+          with open(log_path, encoding="utf-8", errors="replace") as handle:
               for raw in handle:
                   line = ansi.sub("", raw.rstrip("\n"))
-                  if re.match(r"^.*?:\d+:\d+: [A-Z]: ", line) or line.startswith("::error"):
-                      print(repr(line))
+                  match = action_error.match(line)
+                  if match:
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                  else:
+                      match = plain.match(line)
+                      if not match:
+                          continue
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                      if not path.startswith(("Library/Homebrew/", ".github/", "bin/")):
+                          path = f"Library/Homebrew/{path}"
+                  key = (path, lineno, message)
+                  recognized.add(key)
+                  if changed_line(path, lineno):
+                      changed_errors.add(key)
+
+          for path, lineno, message in sorted(changed_errors):
+              print(f"{path}:{lineno}: {message}")
+          if changed_errors:
+              raise SystemExit(f"style reported {len(changed_errors)} offense(s) on changed lines")
+          if int(status_text) != 0 and not recognized:
+              raise SystemExit("style failed without locatable diagnostics")
+          print("changed-line style gate: PASS")
           PY
-          echo '--- autocorrection diff ---'
-          git diff --unified=1 -- \
-            Library/Homebrew/overlay.rb \
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+'''
+          Path(".github/workflows/overlay-validation.yml").write_text(validation)
+
+          rebase = r'''name: Rebase and validate overlay branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebase-overlay-branch
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  rebase-validate-promote:
+    if: github.repository == 'wangzheng15534-blip/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out the deployment branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: overlay-store
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase onto current Homebrew main
+        id: rebase
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --prune origin overlay-store
+          git fetch --prune upstream main
+
+          before=$(git rev-parse origin/overlay-store)
+          printf 'before=%s\n' "$before" >>"$GITHUB_OUTPUT"
+          if ! git rebase upstream/main; then
+            git rebase --abort || true
+            echo "Upstream rebase has semantic conflicts; overlay-store was left unchanged." >&2
+            exit 1
+          fi
+          git branch -f main upstream/main
+          after=$(git rev-parse HEAD)
+          printf 'after=%s\n' "$after" >>"$GITHUB_OUTPUT"
+          if [[ "$before" == "$after" ]]; then
+            printf 'changed=false\n' >>"$GITHUB_OUTPUT"
+          else
+            printf 'changed=true\n' >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate patch formatting and shell syntax
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check upstream/main...HEAD
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "$test_script"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+
+      - name: Run complete overlay recovery matrix
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Reject style offenses on the rebased overlay delta
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(
+            git diff --name-only --diff-filter=ACMR upstream/main...HEAD -- \
+              '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
+          )
+          ((${#changed[@]} > 0)) || exit 0
+          patch="$RUNNER_TEMP/overlay-style.patch"
+          log="$RUNNER_TEMP/overlay-style.log"
+          git diff --unified=0 --no-color upstream/main...HEAD -- "${changed[@]}" >"$patch"
+          set +e
+          bin/brew style --display-cop-names "${changed[@]}" >"$log" 2>&1
+          style_status=$?
+          set -e
+          python3 - "$patch" "$log" "$style_status" <<'PY'
+          import collections
+          import re
+          import sys
+
+          patch_path, log_path, status_text = sys.argv[1:]
+          ranges = collections.defaultdict(list)
+          current = None
+          hunk = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+          with open(patch_path, encoding="utf-8", errors="replace") as handle:
+              for line in handle:
+                  if line.startswith("+++ b/"):
+                      current = line[6:].rstrip("\n")
+                  elif current:
+                      match = hunk.match(line)
+                      if match:
+                          start = int(match.group(1))
+                          count = int(match.group(2) or "1")
+                          if count:
+                              ranges[current].append((start, start + count - 1))
+
+          def changed_line(path, lineno):
+              return any(start <= lineno <= end for start, end in ranges.get(path, ()))
+
+          ansi = re.compile(r"\x1b\[[0-9;]*m")
+          action_error = re.compile(r"^::error file=([^,]+),line=(\d+)(?:,[^:]*)?::(.*)$")
+          plain = re.compile(r"^([^:]+):(\d+):\d+: [A-Z]: (.*)$")
+          recognized = set()
+          changed_errors = set()
+          with open(log_path, encoding="utf-8", errors="replace") as handle:
+              for raw in handle:
+                  line = ansi.sub("", raw.rstrip("\n"))
+                  match = action_error.match(line)
+                  if match:
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                  else:
+                      match = plain.match(line)
+                      if not match:
+                          continue
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                      if not path.startswith(("Library/Homebrew/", ".github/", "bin/")):
+                          path = f"Library/Homebrew/{path}"
+                  key = (path, lineno, message)
+                  recognized.add(key)
+                  if changed_line(path, lineno):
+                      changed_errors.add(key)
+
+          for path, lineno, message in sorted(changed_errors):
+              print(f"{path}:{lineno}: {message}")
+          if changed_errors:
+              raise SystemExit(f"style reported {len(changed_errors)} offense(s) on changed lines")
+          if int(status_text) != 0 and not recognized:
+              raise SystemExit("style failed without locatable diagnostics")
+          print("changed-line style gate: PASS")
+          PY
+
+      - name: Run Sorbet
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Publish tested candidate and promote the exact tested SHA
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        env:
+          BEFORE: ${{ steps.rebase.outputs.before }}
+          AFTER: ${{ steps.rebase.outputs.after }}
+          OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
+            echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+
+          askpass="$(mktemp)"
+          trap 'rm -f "${askpass}"' EXIT
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${OVERLAY_PROMOTION_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git push --force origin HEAD:refs/heads/automation/overlay-rebase-candidate
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git push \
+              --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+              origin HEAD:refs/heads/overlay-store
+'''
+          Path(".github/workflows/rebase-upstream-overlay.yml").write_text(rebase)
+          PY
+
+          git diff --check
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "$test_script"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+
+      - name: Require zero-error Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Require clean changed-line style
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(
+            git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
+              '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
+          )
+          patch="$RUNNER_TEMP/overlay-style.patch"
+          log="$RUNNER_TEMP/overlay-style.log"
+          git diff --unified=0 --no-color origin/overlay-store...HEAD -- "${changed[@]}" >"$patch"
+          set +e
+          bin/brew style --display-cop-names "${changed[@]}" >"$log" 2>&1
+          style_status=$?
+          set -e
+          python3 - "$patch" "$log" "$style_status" <<'PY'
+          import collections
+          import re
+          import sys
+
+          patch_path, log_path, status_text = sys.argv[1:]
+          ranges = collections.defaultdict(list)
+          current = None
+          hunk = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+          with open(patch_path, encoding="utf-8", errors="replace") as handle:
+              for line in handle:
+                  if line.startswith("+++ b/"):
+                      current = line[6:].rstrip("\n")
+                  elif current:
+                      match = hunk.match(line)
+                      if match:
+                          start = int(match.group(1))
+                          count = int(match.group(2) or "1")
+                          if count:
+                              ranges[current].append((start, start + count - 1))
+
+          def changed_line(path, lineno):
+              return any(start <= lineno <= end for start, end in ranges.get(path, ()))
+
+          ansi = re.compile(r"\x1b\[[0-9;]*m")
+          action_error = re.compile(r"^::error file=([^,]+),line=(\d+)(?:,[^:]*)?::(.*)$")
+          plain = re.compile(r"^([^:]+):(\d+):\d+: [A-Z]: (.*)$")
+          changed_errors = set()
+          recognized = set()
+          with open(log_path, encoding="utf-8", errors="replace") as handle:
+              for raw in handle:
+                  line = ansi.sub("", raw.rstrip("\n"))
+                  match = action_error.match(line)
+                  if match:
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                  else:
+                      match = plain.match(line)
+                      if not match:
+                          continue
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                      if not path.startswith(("Library/Homebrew/", ".github/", "bin/")):
+                          path = f"Library/Homebrew/{path}"
+                  key = (path, lineno, message)
+                  recognized.add(key)
+                  if changed_line(path, lineno):
+                      changed_errors.add(key)
+
+          for path, lineno, message in sorted(changed_errors):
+              print(f"{path}:{lineno}: {message}")
+          if changed_errors:
+              raise SystemExit(f"style reported {len(changed_errors)} offense(s) on changed lines")
+          if int(status_text) != 0 and not recognized:
+              raise SystemExit("style failed without locatable diagnostics")
+          print("changed-line style gate: PASS")
+          PY
+
+      - name: Run affected specs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel \
+            --only=overlay,formula_installer,formula_pin,cmd/overlay-sync,uninstall,cmd/link,cmd/bundle/cleanup_subcommand
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Commit exact validated review fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "OpenAI"
+          git config user.email "openai@example.invalid"
+          git add \
+            .github/workflows/overlay-validation.yml \
+            .github/workflows/rebase-upstream-overlay.yml \
+            Library/Homebrew/formula_installer.rb \
             Library/Homebrew/formula_pin.rb \
+            Library/Homebrew/install.rb \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi \
             Library/Homebrew/test/cmd/overlay-sync_spec.rb \
             Library/Homebrew/test/formula_installer_spec.rb \
-            .github/workflows/rebase-upstream-overlay.yml \
-            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh | head -n 1200
+            Library/Homebrew/test/overlay_spec.rb \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
+            Library/Homebrew/test/support/overlay_removal_partition_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh
+          git diff --cached --check
+          git commit -m "Harden overlay review validation"
+          git push origin HEAD:refs/heads/fix/overlay-review-hardening
