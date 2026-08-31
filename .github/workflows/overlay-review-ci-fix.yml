@@ -26,7 +26,7 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Fetch validated fixer
+      - name: Prepare exact reviewed patch
         shell: bash
         run: |
           set -euo pipefail
@@ -57,15 +57,14 @@ jobs:
           ]
           for block in blocks:
               if block not in text:
-                  raise SystemExit(f"staged fixer block not found: {block.splitlines()[1:3]}")
+                  raise SystemExit("expected staged fixer block not found")
               text = text.replace(block, "", 1)
 
-          workflow_marker = 'replace(\n    ".github/workflows/overlay-validation.yml",'
-          index = text.find(workflow_marker)
+          marker = 'replace(\n    ".github/workflows/overlay-validation.yml",'
+          index = text.find(marker)
           if index < 0:
-              raise SystemExit("workflow rewrite marker not found in staged fixer")
-          text = text[:index]
-          path.write_text(text)
+              raise SystemExit("workflow rewrite marker not found")
+          path.write_text(text[:index])
           PY
 
       - name: Apply reviewed fixes
@@ -76,8 +75,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("Library/Homebrew/overlay.rb")
-          text = path.read_text()
+          overlay = Path("Library/Homebrew/overlay.rb")
+          text = overlay.read_text()
           old = '''        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)
                   Overlay.clear_caches!
                   self
@@ -91,24 +90,25 @@ jobs:
           '''
           if text.count(old) != 1:
               raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1))
+          overlay.write_text(text.replace(old, new, 1))
 
           spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
           spec = spec_path.read_text()
-          old_cleanup = '''  ensure
-            marker&.unlink if marker&.exist? || marker&.symlink?
-            opened_marker&.rename(marker) if opened_marker&.exist?
-            transaction&.rollback! unless transaction&.finished?
-          '''
-          new_cleanup = '''  ensure
-            marker.unlink if marker&.exist? || marker&.symlink?
-            opened_marker&.rename(marker) if opened_marker&.exist?
-            transaction&.rollback! unless transaction&.finished?
-          '''
-          if spec.count(old_cleanup) != 1:
-              raise SystemExit(f"expected one marker replacement cleanup context, found {spec.count(old_cleanup)}")
-          spec_path.write_text(spec.replace(old_cleanup, new_cleanup, 1))
+          example = '  it "rejects a transaction marker path replaced after opening" do\n'
+          start = spec.find(example)
+          if start < 0:
+              raise SystemExit("marker replacement example not found")
+          old_line = "    marker&.unlink if marker&.exist? || marker&.symlink?\n"
+          pos = spec.find(old_line, start)
+          if pos < 0:
+              raise SystemExit("marker cleanup line not found inside replacement example")
+          next_example = spec.find('\n  it "', start + len(example))
+          if next_example >= 0 and pos >= next_example:
+              raise SystemExit("marker cleanup match escaped replacement example")
+          spec = spec[:pos] + "    marker.unlink if marker&.exist? || marker&.symlink?\n" + spec[pos + len(old_line):]
+          spec_path.write_text(spec)
           PY
+
           git show origin/automation/overlay-review-ci-fix:.github/overlay-validation.final.yml >.github/workflows/overlay-validation.yml
           git show origin/automation/overlay-review-ci-fix:.github/rebase-upstream-overlay.final.yml >.github/workflows/rebase-upstream-overlay.yml
           git diff --check
