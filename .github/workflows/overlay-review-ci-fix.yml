@@ -26,13 +26,14 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Prepare exact reviewed patch
+      - name: Prepare deterministic patch helpers
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
           test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
           git show origin/automation/overlay-review-ci-fix:.github/overlay-review-fix.py >"$RUNNER_TEMP/overlay-review-fix.py"
+          git show origin/automation/overlay-review-ci-fix:.github/overlay-review-finalize.py >"$RUNNER_TEMP/overlay-review-finalize.py"
           python3 - "$RUNNER_TEMP/overlay-review-fix.py" <<'PY'
           from pathlib import Path
           import sys
@@ -72,83 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$RUNNER_TEMP/overlay-review-fix.py"
-          python3 - <<'PY'
-          from pathlib import Path
-
-          overlay = Path("Library/Homebrew/overlay.rb")
-          text = overlay.read_text()
-          old = '''        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)
-                  Overlay.clear_caches!
-                  self
-                rescue Exception # rubocop:disable Lint/RescueException
-          '''
-          new = '''        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)
-                  Overlay.clear_caches!
-                  self
-                # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.
-                rescue Exception # rubocop:disable Lint/RescueException
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
-          text = text.replace(old, new, 1)
-
-          old_restore = '''    def self.restore_inherited_rack!(formula_name)
-              return false unless active? && valid_formula_name?(formula_name)
-
-              rack = HOMEBREW_CELLAR/formula_name
-              return false unless rack.directory? && !rack.symlink? && base_formula_available?(formula_name)
-              return false if local_realizations?(formula_name)
-
-              rack.children.each do |child|
-                unless child.symlink? && inherited_keg?(child)
-                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
-                end
-
-                child.unlink
-              end
-          '''
-          new_restore = '''    def self.restore_inherited_rack!(formula_name)
-              return false unless active?
-              return false unless valid_formula_name?(formula_name)
-
-              rack = HOMEBREW_CELLAR/formula_name
-              return false unless rack.directory?
-              return false if rack.symlink?
-              return false unless base_formula_available?(formula_name)
-              return false if local_realizations?(formula_name)
-
-              rack.children.each do |child|
-                unless child.symlink?
-                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
-                end
-                unless inherited_keg?(child)
-                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
-                end
-
-                child.unlink
-              end
-          '''
-          if text.count(old_restore) != 1:
-              raise SystemExit(f"expected one restore-inherited block, found {text.count(old_restore)}")
-          overlay.write_text(text.replace(old_restore, new_restore, 1))
-
-          spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
-          spec = spec_path.read_text()
-          example = '  it "rejects a transaction marker path replaced after opening" do\n'
-          start = spec.find(example)
-          if start < 0:
-              raise SystemExit("marker replacement example not found")
-          old_line = "    marker&.unlink if marker&.exist? || marker&.symlink?\n"
-          pos = spec.find(old_line, start)
-          if pos < 0:
-              raise SystemExit("marker cleanup line not found inside replacement example")
-          next_example = spec.find('\n  it "', start + len(example))
-          if next_example >= 0 and pos >= next_example:
-              raise SystemExit("marker cleanup match escaped replacement example")
-          spec = spec[:pos] + "    marker.unlink if marker&.exist? || marker&.symlink?\n" + spec[pos + len(old_line):]
-          spec_path.write_text(spec)
-          PY
-
+          python3 "$RUNNER_TEMP/overlay-review-finalize.py"
           git show origin/automation/overlay-review-ci-fix:.github/overlay-validation.final.yml >.github/workflows/overlay-validation.yml
           git show origin/automation/overlay-review-ci-fix:.github/rebase-upstream-overlay.final.yml >.github/workflows/rebase-upstream-overlay.yml
           git diff --check
