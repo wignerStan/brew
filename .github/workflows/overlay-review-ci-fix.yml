@@ -1,4 +1,4 @@
-name: Report changed-line overlay style regressions
+name: Preview safe overlay style autocorrections
 
 on:
   push:
@@ -16,9 +16,9 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
-  report-style:
+  preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out exact reviewed head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -26,7 +26,7 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Report offenses on added or modified lines
+      - name: Apply safe autocorrections and report remaining issues
         shell: bash
         run: |
           set -euo pipefail
@@ -35,67 +35,30 @@ jobs:
             git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
               '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
           )
-          log="$RUNNER_TEMP/candidate-style.log"
-          patch="$RUNNER_TEMP/candidate.patch"
-          git diff --unified=0 --no-color origin/overlay-store...HEAD -- "${changed[@]}" >"$patch"
           set +e
-          bin/brew style --display-cop-names "${changed[@]}" >"$log" 2>&1
-          status=$?
+          bin/brew style --fix "${changed[@]}" >"$RUNNER_TEMP/fix.log" 2>&1
+          fix_status=$?
+          bin/brew style --display-cop-names "${changed[@]}" >"$RUNNER_TEMP/remaining.log" 2>&1
+          remaining_status=$?
           set -e
-          echo "style status=$status"
-          python3 - "$patch" "$log" <<'PY'
-          import collections
+          echo "fix status=$fix_status remaining status=$remaining_status"
+          git diff --stat
+          echo '--- remaining relevant diagnostics ---'
+          python3 - "$RUNNER_TEMP/remaining.log" <<'PY'
           import re
           import sys
-
-          patch_path, log_path = sys.argv[1:]
-          ranges = collections.defaultdict(list)
-          current = None
-          hunk = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-          with open(patch_path, encoding="utf-8", errors="replace") as handle:
-              for line in handle:
-                  if line.startswith("+++ b/"):
-                      current = line[6:].rstrip("\n")
-                  elif current:
-                      match = hunk.match(line)
-                      if match:
-                          start = int(match.group(1))
-                          count = int(match.group(2) or "1")
-                          if count:
-                              ranges[current].append((start, start + count - 1))
-
-          def changed_line(path, lineno):
-              return any(start <= lineno <= end for start, end in ranges.get(path, ()))
-
           ansi = re.compile(r"\x1b\[[0-9;]*m")
-          action_error = re.compile(r"^::error file=([^,]+),line=(\d+)(?:,[^:]*)?::(.*)$")
-          plain = re.compile(r"^([^:]+):(?P<line>\d+):\d+: (.*)$")
-          found = []
-          with open(log_path, encoding="utf-8", errors="replace") as handle:
+          with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
               for raw in handle:
                   line = ansi.sub("", raw.rstrip("\n"))
-                  match = action_error.match(line)
-                  if match:
-                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
-                  else:
-                      match = plain.match(line)
-                      if not match:
-                          continue
-                      path, lineno, message = match.group(1), int(match.group("line")), match.group(3)
-                      if not ("shellcheck" in message.lower() or re.match(r"[A-Z]: ", message)):
-                          continue
-                      if path.startswith("Library/Homebrew/"):
-                          pass
-                      elif path.startswith((".github/", "bin/")):
-                          pass
-                      else:
-                          path = f"Library/Homebrew/{path}"
-                  if changed_line(path, lineno):
-                      key = (path, lineno, message)
-                      if key not in found:
-                          found.append(key)
-
-          print(f"changed-line offenses={len(found)}")
-          for path, lineno, message in found:
-              print(f"CHANGED {path}:{lineno}: {message}")
+                  if re.match(r"^.*?:\d+:\d+: [A-Z]: ", line) or line.startswith("::error"):
+                      print(repr(line))
           PY
+          echo '--- autocorrection diff ---'
+          git diff --unified=1 -- \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/formula_pin.rb \
+            Library/Homebrew/test/cmd/overlay-sync_spec.rb \
+            Library/Homebrew/test/formula_installer_spec.rb \
+            .github/workflows/rebase-upstream-overlay.yml \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh | head -n 1200
