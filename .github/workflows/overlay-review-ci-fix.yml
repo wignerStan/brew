@@ -90,7 +90,47 @@ jobs:
           '''
           if text.count(old) != 1:
               raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
-          overlay.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          old_restore = '''    def self.restore_inherited_rack!(formula_name)
+              return false unless active? && valid_formula_name?(formula_name)
+
+              rack = HOMEBREW_CELLAR/formula_name
+              return false unless rack.directory? && !rack.symlink? && base_formula_available?(formula_name)
+              return false if local_realizations?(formula_name)
+
+              rack.children.each do |child|
+                unless child.symlink? && inherited_keg?(child)
+                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
+                end
+
+                child.unlink
+              end
+          '''
+          new_restore = '''    def self.restore_inherited_rack!(formula_name)
+              return false unless active?
+              return false unless valid_formula_name?(formula_name)
+
+              rack = HOMEBREW_CELLAR/formula_name
+              return false unless rack.directory?
+              return false if rack.symlink?
+              return false unless base_formula_available?(formula_name)
+              return false if local_realizations?(formula_name)
+
+              rack.children.each do |child|
+                unless child.symlink?
+                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
+                end
+                unless inherited_keg?(child)
+                  raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}"
+                end
+
+                child.unlink
+              end
+          '''
+          if text.count(old_restore) != 1:
+              raise SystemExit(f"expected one restore-inherited block, found {text.count(old_restore)}")
+          overlay.write_text(text.replace(old_restore, new_restore, 1))
 
           spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
           spec = spec_path.read_text()
