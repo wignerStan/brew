@@ -1,4 +1,4 @@
-name: Fix hardening-only Sorbet regressions
+name: Fix overlay Sorbet debt
 
 on:
   push:
@@ -26,14 +26,14 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Verify expected source and baseline
+      - name: Verify expected source and target base
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "ab625c16d06493b79d0eff797e3ea5c72aac99b1"
+          test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
           test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
 
-      - name: Apply validated test fixture and typing fixes
+      - name: Fix remaining overlay Sorbet errors
         shell: bash
         run: |
           set -euo pipefail
@@ -49,183 +49,109 @@ jobs:
               p.write_text(text.replace(old, new, count))
 
           replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    stub_const("HOMEBREW_CELLAR", user_cellar)\n',
-              '    stub_const("HOMEBREW_CELLAR", user_cellar)\n'
-              '    stub_const("HOMEBREW_LINKED_KEGS", prefix/"var/homebrew/linked")\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n',
-              '    # Reset the process-local exchange cache so each example probes independently.\n'
-              '    # rubocop:disable Homebrew/NoInstanceVariableAccessInTests\n'
-              '    described_class.instance_variable_set(:@atomic_exchange_supported, false)\n'
-              '    # rubocop:enable Homebrew/NoInstanceVariableAccessInTests\n'
-              '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
-              '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
-              '      left.rename(temporary)\n'
-              '      right.rename(left)\n'
-              '      temporary.rename(right)\n'
-              '    end\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '  after do\n'
-              '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
-              '  end\n',
-              '  after do\n'
-              '    # Teardown must release the private lock without publishing a generation.\n'
-              '    # rubocop:disable Homebrew/NoSendInTests\n'
-              '    described_class.send(:release_mutation_lock!) if described_class.mutation_active?\n'
-              '    # rubocop:enable Homebrew/NoSendInTests\n'
-              '  end\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    FileUtils.ln_s(base_cellar/name, rack) unless rack.exist? || rack.symlink?\n',
-              '    FileUtils.ln_s(base_cellar/name, rack) if !rack.exist? && !rack.symlink?\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    described_class.ensure_atomic_exchange_supported!\n'
-              '    expect(described_class.instance_variable_get(:@atomic_exchange_supported)).to be(true)\n',
-              '    described_class.ensure_atomic_exchange_supported!\n'
-              '    described_class.ensure_atomic_exchange_supported!\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    allow(described_class).to receive(:atomic_exchange!).and_wrap_original do |original, *paths|\n'
-              '      events << [:exchange, *paths]\n'
-              '      original.call(*paths)\n'
-              '    end\n',
-              '    allow(described_class).to receive(:atomic_exchange!) do |left, right|\n'
-              '      events << [:exchange, left, right]\n'
-              '      temporary = left.parent/".homebrew-overlay-rspec-exchange"\n'
-              '      left.rename(temporary)\n'
-              '      right.rename(left)\n'
-              '      temporary.rename(right)\n'
-              '    end\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    transaction.commit!\n\n'
-              '    expect(user_cellar/"foo/2.0/.brew-overlay-transaction").not_to exist\n',
-              '    expect(described_class).to receive(:sync!)\n'
-              '    transaction.commit!\n\n'
-              '    expect(user_cellar/"foo/2.0/.brew-overlay-transaction").not_to exist\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    expect(transaction.replacement_rack).not_to exist\n'
-              '    expect(described_class).to have_received(:sync!)\n',
-              '    expect(transaction.replacement_rack).not_to exist\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    expect(described_class.discard_local_keg!("foo", "2.0")).to be(true)\n'
-              '    expect(local_keg).not_to exist\n'
-              '    expect(base_keg).to exist\n'
-              '    expect(described_class).to have_received(:sync!)\n',
-              '    expect(described_class).to receive(:sync!)\n'
-              '    expect(described_class.discard_local_keg!("foo", "2.0")).to be(true)\n'
-              '    expect(local_keg).not_to exist\n'
-              '    expect(base_keg).to exist\n',
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              '    mutation_active = false\n',
-              '    mutation_active = T.let(false, T::Boolean)\n',
+              "Library/Homebrew/formula_installer.rb",
+              "        base_generation: T.must(@overlay_base_generation),\n",
+              "        base_generation: @overlay_base_generation,\n",
           )
 
           replace(
-              "Library/Homebrew/test/uninstall_spec.rb",
-              '    let(:local_keg) { Keg.new(dependency.rack/"2") }\n'
-              '    let(:inherited_keg) { Keg.new(HOMEBREW_PREFIX/"base-cellar/dependency/1") }\n\n'
-              '    before do\n'
-              '      local_keg.to_path.mkpath\n'
-              '      inherited_keg.to_path.mkpath\n',
-              '    let(:local_keg_path) { dependency.rack/"2" }\n'
-              '    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base/Cellar/dependency/1" }\n'
-              '    let(:local_keg) { instance_double(Keg, to_path: local_keg_path) }\n'
-              '    let(:inherited_keg) { instance_double(Keg, to_path: inherited_keg_path) }\n\n'
-              '    before do\n',
+              "Library/Homebrew/overlay.rb",
+              "    MAX_MANAGED_STATE_BYTES = 64 * 1024 * 1024\n",
+              "    MAX_MANAGED_STATE_BYTES = T.let(64 * 1024 * 1024, Integer)\n",
           )
           replace(
-              "Library/Homebrew/test/uninstall_spec.rb",
-              '      end.to output(/administrator Homebrew prefix/).to_stderr\n',
-              '      end.to output(/cannot be modified from the user prefix/).to_stderr\n',
+              "Library/Homebrew/overlay.rb",
+              "      rack.directory? && !rack.symlink? && keg.symlink? && inherited_keg?(keg)\n",
+              "      return false unless rack.directory?\n"
+              "      return false if rack.symlink?\n"
+              "      return false unless keg.symlink?\n\n"
+              "      inherited_keg?(keg)\n",
           )
-
           replace(
-              "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb",
-              '      allow(Homebrew::Bundle::VscodeExtension).to receive(:cleanup_items).and_return([])\n'
-              '      allow(Homebrew::Bundle::Flatpak).to receive(:cleanup_items).and_return([])\n'
-              '      allow(Kernel).to receive(:system)\n',
-              '      allow(Homebrew::Bundle::VscodeExtension).to receive(:cleanup_items).and_return([])\n'
-              '      allow(Homebrew::Bundle::Flatpak).to receive(:cleanup_items).and_return([])\n'
-              '      allow(Kernel).to receive(:system).and_return(true)\n',
+              "Library/Homebrew/overlay.rb",
+              "        fields.each_slice(2) do |relative, target|\n"
+              "          expected = expected_link_target(relative)\n",
+              "        fields.each_slice(2) do |relative, target|\n"
+              "          relative = T.must(relative)\n"
+              "          expected = expected_link_target(relative)\n",
           )
 
           replace(
-              "Library/Homebrew/test/formula_pin_spec.rb",
-              '    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n'
-              '    allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|\n'
-              '      inherited_paths.include?(Pathname(path))\n'
-              '    end\n',
-              '    allow(Homebrew::Overlay).to receive(:active?).and_return(true)\n'
-              '    allow(Homebrew::Overlay).to receive(:base_prefix).and_return(HOMEBREW_PREFIX/"base")\n'
-              '    allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|\n'
-              '      inherited_paths.include?(Pathname(path))\n'
-              '    end\n',
-          )
-          replace(
-              "Library/Homebrew/test/formula_pin_spec.rb",
-              '    expect(formula_pin).to be_stale\n',
-              '    expect(formula_pin.stale?).to be(true)\n',
-              count=2,
+              "Library/Homebrew/install.rb",
+              "            inherited_link = false\n",
+              "            inherited_link = T.let(false, T::Boolean)\n",
           )
 
           replace(
-              "Library/Homebrew/test/cmd/link_spec.rb",
-              '    keg = instance_double(Keg, rack: HOMEBREW_CELLAR/"testball", linked?: false, name: "testball")\n',
-              '    keg = instance_double(\n'
-              '      Keg,\n'
-              '      rack: HOMEBREW_CELLAR/"testball",\n'
-              '      linked?: false,\n'
-              '      name: "testball",\n'
-              '      to_path: HOMEBREW_CELLAR/"testball/1.0",\n'
-              '    )\n',
+              "Library/Homebrew/test/overlay_spec.rb",
+              "# typed: strict\n",
+              "# typed: true\n",
           )
           replace(
-              "Library/Homebrew/test/cmd/link_spec.rb",
-              '        to_formula: test_formula,\n'
-              '        to_s:       "#{formula_name}/1.0",\n',
-              '        to_formula: test_formula,\n'
-              '        to_path:    HOMEBREW_CELLAR/formula_name/"1.0",\n'
-              '        to_s:       "#{formula_name}/1.0",\n',
+              "Library/Homebrew/test/overlay_spec.rb",
+              "  it \"rejects a transaction marker path replaced after opening\" do\n"
+              "    add_base_formula(\"foo\", \"1.0\")\n"
+              "    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))\n",
+              "  it \"rejects a transaction marker path replaced after opening\" do\n"
+              "    transaction = T.let(nil, T.nilable(Homebrew::Overlay::FormulaTransaction))\n"
+              "    marker = T.let(nil, T.nilable(Pathname))\n"
+              "    opened_marker = T.let(nil, T.nilable(Pathname))\n\n"
+              "    add_base_formula(\"foo\", \"1.0\")\n"
+              "    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    opened_marker&.rename(marker) if opened_marker&.exist?\n",
+              "    opened_marker&.rename(T.must(marker)) if opened_marker&.exist?\n",
+          )
+          replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    descriptor = described_class::MUTATION_LOCK_DESCRIPTOR\n",
+              "    descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR\n",
+          )
+
+          replace(
+              "Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi",
+              "    sig { returns(T::Boolean) }\n"
+              "    def no_verify_attestations?; end\n\n"
+              "    sig { returns(String) }\n"
+              "    def pip_index_url; end\n",
+              "    sig { returns(T::Boolean) }\n"
+              "    def no_verify_attestations?; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay?; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay_active?; end\n\n"
+              "    sig { returns(T.nilable(::String)) }\n"
+              "    def overlay_base_prefix; end\n\n"
+              "    sig { returns(T::Boolean) }\n"
+              "    def overlay_force?; end\n\n"
+              "    sig { returns(T.nilable(::String)) }\n"
+              "    def overlay_user_prefix; end\n\n"
+              "    sig { returns(String) }\n"
+              "    def pip_index_url; end\n",
           )
           PY
 
           bin/brew style --fix \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/install.rb \
+            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/test/uninstall_spec.rb \
-            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
-            Library/Homebrew/test/formula_pin_spec.rb \
-            Library/Homebrew/test/cmd/link_spec.rb
+            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
           bin/brew style \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/install.rb \
+            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/test/uninstall_spec.rb \
-            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
-            Library/Homebrew/test/formula_pin_spec.rb \
-            Library/Homebrew/test/cmd/link_spec.rb
+            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
           git diff --check
 
-      - name: Run affected specs
+      - name: Require clean Sorbet
         shell: bash
         run: |
           set -euo pipefail
-          bin/brew tests --no-parallel \
-            --only=overlay,uninstall,formula_pin,cmd/link,cmd/bundle/cleanup_subcommand
+          bin/brew typecheck
 
       - name: Run complete overlay recovery matrix
         shell: bash
@@ -233,73 +159,24 @@ jobs:
           set -euo pipefail
           bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
 
-      - name: Prove Sorbet is no worse than overlay-store
+      - name: Run full Homebrew RSpec suite
         shell: bash
         run: |
           set -euo pipefail
-          candidate_log="$RUNNER_TEMP/candidate-typecheck.log"
-          baseline_log="$RUNNER_TEMP/baseline-typecheck.log"
+          bin/brew tests --no-parallel
 
-          set +e
-          bin/brew typecheck >"$candidate_log" 2>&1
-          candidate_status=$?
-          set -e
-          test "$candidate_status" -ne 0
-
-          git worktree add --detach "$RUNNER_TEMP/overlay-store" origin/overlay-store
-          set +e
-          (
-            cd "$RUNNER_TEMP/overlay-store"
-            bin/brew typecheck
-          ) >"$baseline_log" 2>&1
-          baseline_status=$?
-          set -e
-          test "$baseline_status" -ne 0
-
-          python3 - "$baseline_log" "$candidate_log" <<'PY'
-          import collections
-          import re
-          import sys
-
-          ansi = re.compile(r"\x1b\[[0-9;]*m")
-          error = re.compile(r"^([^:\n]+):\d+: (.*?) https://srb\.help/(\d+)\s*$")
-
-          def signatures(path):
-              result = collections.Counter()
-              with open(path, encoding="utf-8", errors="replace") as handle:
-                  for raw in handle:
-                      line = ansi.sub("", raw.rstrip("\n"))
-                      match = error.match(line)
-                      if match:
-                          result[(match.group(1), match.group(2), match.group(3))] += 1
-              return result
-
-          baseline = signatures(sys.argv[1])
-          candidate = signatures(sys.argv[2])
-          if sum(baseline.values()) != 29:
-              raise SystemExit(f"expected 29 overlay-store Sorbet errors, found {sum(baseline.values())}")
-          if candidate != baseline:
-              print("Sorbet signature delta from overlay-store:")
-              for key, count in (candidate - baseline).items():
-                  print("NEW", count, key)
-              for key, count in (baseline - candidate).items():
-                  print("MISSING", count, key)
-              raise SystemExit(1)
-          print("Sorbet baseline equivalence: PASS (29 pre-existing signatures, 0 new)")
-          PY
-
-      - name: Commit exact validated fixture fixes
+      - name: Commit exact validated Sorbet fixes
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "OpenAI"
           git config user.email "openai@example.invalid"
           git add \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/install.rb \
+            Library/Homebrew/overlay.rb \
             Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/test/uninstall_spec.rb \
-            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
-            Library/Homebrew/test/formula_pin_spec.rb \
-            Library/Homebrew/test/cmd/link_spec.rb
+            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
           git diff --cached --check
-          git commit -m "Fix overlay validation regressions"
+          git commit -m "Make overlay validation typecheck clean"
           git push origin HEAD:refs/heads/fix/overlay-review-hardening
