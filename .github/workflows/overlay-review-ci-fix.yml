@@ -1,4 +1,4 @@
-name: Fix overlay Sorbet debt
+name: Audit overlay hardening style delta
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - .github/workflows/overlay-review-ci-fix.yml
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CI: "1"
@@ -16,9 +16,9 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
-  fix-and-validate:
+  audit-style-delta:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - name: Check out reviewed hardening head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -26,152 +26,80 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Verify expected source and target base
+      - name: Verify exact review boundary
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
           test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
 
-      - name: Fix remaining overlay Sorbet errors
+      - name: Compare RuboCop offense signatures with overlay-store
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
+          candidate_log="$RUNNER_TEMP/candidate-style.log"
+          baseline_log="$RUNNER_TEMP/baseline-style.log"
+          changed_file="$RUNNER_TEMP/changed-files"
+          base_file="$RUNNER_TEMP/base-files"
 
-          def replace(path, old, new, count=1):
-              p = Path(path)
-              text = p.read_text()
-              actual = text.count(old)
-              if actual != count:
-                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
-              p.write_text(text.replace(old, new, count))
+          git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
+            '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew >"$changed_file"
 
-          replace(
-              "Library/Homebrew/formula_installer.rb",
-              "        base_generation: T.must(@overlay_base_generation),\n",
-              "        base_generation: @overlay_base_generation,\n",
-          )
+          set +e
+          mapfile -t changed <"$changed_file"
+          bin/brew style --display-cop-names "${changed[@]}" >"$candidate_log" 2>&1
+          candidate_status=$?
+          set -e
+          echo "candidate style status=$candidate_status"
 
-          replace(
-              "Library/Homebrew/overlay.rb",
-              "    MAX_MANAGED_STATE_BYTES = 64 * 1024 * 1024\n",
-              "    MAX_MANAGED_STATE_BYTES = T.let(64 * 1024 * 1024, Integer)\n",
-          )
-          replace(
-              "Library/Homebrew/overlay.rb",
-              "      rack.directory? && !rack.symlink? && keg.symlink? && inherited_keg?(keg)\n",
-              "      return false unless rack.directory?\n"
-              "      return false if rack.symlink?\n"
-              "      return false unless keg.symlink?\n\n"
-              "      inherited_keg?(keg)\n",
-          )
-          replace(
-              "Library/Homebrew/overlay.rb",
-              "        fields.each_slice(2) do |relative, target|\n"
-              "          expected = expected_link_target(relative)\n",
-              "        fields.each_slice(2) do |relative, target|\n"
-              "          relative = T.must(relative)\n"
-              "          expected = expected_link_target(relative)\n",
-          )
+          git worktree add --detach "$RUNNER_TEMP/overlay-store" origin/overlay-store
+          while IFS= read -r file; do
+            [[ -e "$RUNNER_TEMP/overlay-store/$file" ]] && printf '%s\n' "$file"
+          done <"$changed_file" >"$base_file"
 
-          replace(
-              "Library/Homebrew/install.rb",
-              "            inherited_link = false\n",
-              "            inherited_link = T.let(false, T::Boolean)\n",
-          )
+          set +e
+          (
+            cd "$RUNNER_TEMP/overlay-store"
+            mapfile -t base_files <"$base_file"
+            if ((${#base_files[@]})); then
+              bin/brew style --display-cop-names "${base_files[@]}"
+            fi
+          ) >"$baseline_log" 2>&1
+          baseline_status=$?
+          set -e
+          echo "baseline style status=$baseline_status"
 
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              "# typed: strict\n",
-              "# typed: true\n",
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              "  it \"rejects a transaction marker path replaced after opening\" do\n"
-              "    add_base_formula(\"foo\", \"1.0\")\n"
-              "    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))\n",
-              "  it \"rejects a transaction marker path replaced after opening\" do\n"
-              "    transaction = T.let(nil, T.nilable(Homebrew::Overlay::FormulaTransaction))\n"
-              "    marker = T.let(nil, T.nilable(Pathname))\n"
-              "    opened_marker = T.let(nil, T.nilable(Pathname))\n\n"
-              "    add_base_formula(\"foo\", \"1.0\")\n"
-              "    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))\n",
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
-              "    descriptor = described_class::MUTATION_LOCK_DESCRIPTOR\n",
-              "    descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR\n",
-          )
+          python3 - "$baseline_log" "$candidate_log" <<'PY'
+          import collections
+          import re
+          import sys
 
-          replace(
-              "Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi",
-              "    sig { returns(T::Boolean) }\n"
-              "    def no_verify_attestations?; end\n\n"
-              "    sig { returns(String) }\n"
-              "    def pip_index_url; end\n",
-              "    sig { returns(T::Boolean) }\n"
-              "    def no_verify_attestations?; end\n\n"
-              "    sig { returns(T::Boolean) }\n"
-              "    def overlay?; end\n\n"
-              "    sig { returns(T::Boolean) }\n"
-              "    def overlay_active?; end\n\n"
-              "    sig { returns(T.nilable(::String)) }\n"
-              "    def overlay_base_prefix; end\n\n"
-              "    sig { returns(T::Boolean) }\n"
-              "    def overlay_force?; end\n\n"
-              "    sig { returns(T.nilable(::String)) }\n"
-              "    def overlay_user_prefix; end\n\n"
-              "    sig { returns(String) }\n"
-              "    def pip_index_url; end\n",
-          )
+          ansi = re.compile(r"\x1b\[[0-9;]*m")
+          offense = re.compile(r"^(.*?):\d+:\d+: [A-Z]: ([^:]+): (.*)$")
+
+          def signatures(path):
+              result = collections.Counter()
+              with open(path, encoding="utf-8", errors="replace") as handle:
+                  for raw in handle:
+                      line = ansi.sub("", raw.rstrip("\n"))
+                      match = offense.match(line)
+                      if match:
+                          filename = match.group(1)
+                          marker = "Library/Homebrew/"
+                          if marker in filename:
+                              filename = filename.split(marker, 1)[1]
+                          result[(filename, match.group(2), match.group(3))] += 1
+              return result
+
+          baseline = signatures(sys.argv[1])
+          candidate = signatures(sys.argv[2])
+          new = candidate - baseline
+          print(f"baseline offenses={sum(baseline.values())}")
+          print(f"candidate offenses={sum(candidate.values())}")
+          print(f"new offenses={sum(new.values())}")
+          for key, count in sorted(new.items()):
+              print("NEW", count, key)
           PY
 
-          bin/brew style --fix \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/install.rb \
-            Library/Homebrew/overlay.rb \
-            Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
-          bin/brew style \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/install.rb \
-            Library/Homebrew/overlay.rb \
-            Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
-          git diff --check
-
-      - name: Require clean Sorbet
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin/brew typecheck
-
-      - name: Run complete overlay recovery matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
-
-      - name: Run full Homebrew RSpec suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin/brew tests --no-parallel
-
-      - name: Commit exact validated Sorbet fixes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "OpenAI"
-          git config user.email "openai@example.invalid"
-          git add \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/install.rb \
-            Library/Homebrew/overlay.rb \
-            Library/Homebrew/test/overlay_spec.rb \
-            Library/Homebrew/sorbet/rbi/dsl/homebrew/env_config.rbi
-          git diff --cached --check
-          git commit -m "Make overlay validation typecheck clean"
-          git push origin HEAD:refs/heads/fix/overlay-review-hardening
+          echo '--- candidate style tail ---'
+          tail -n 40 "$candidate_log" || true
