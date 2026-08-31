@@ -1,0 +1,67 @@
+name: Diagnose final overlay style line
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-ci-fix
+    paths:
+      - .github/workflows/overlay-review-line-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out reviewed head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/overlay-review-hardening
+          fetch-depth: 0
+
+      - name: Apply exact patch and print target lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show origin/automation/overlay-review-ci-fix:.github/overlay-review-fix.py >"$RUNNER_TEMP/fix.py"
+          git show origin/automation/overlay-review-ci-fix:.github/overlay-review-finalize.py >"$RUNNER_TEMP/finalize.py"
+          python3 - "$RUNNER_TEMP/fix.py" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          for block in [
+              '''replace(
+              "Library/Homebrew/overlay.rb",
+              "      rescue Exception # rubocop:disable Lint/RescueException\\n",
+              "      # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.\\n"
+              "      rescue Exception # rubocop:disable Lint/RescueException\\n",
+              count=1,
+          )
+          ''',
+              '''replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    opened_marker&.rename(marker) if opened_marker&.exist?\\n",
+              "    opened_marker&.rename(T.must(marker)) if opened_marker&.exist?\\n",
+          )
+          ''',
+          ]:
+              text = text.replace(block, "", 1)
+          marker = 'replace(\n    ".github/workflows/overlay-validation.yml",'
+          text = text[:text.index(marker)]
+          path.write_text(text)
+          PY
+          python3 "$RUNNER_TEMP/fix.py"
+          python3 "$RUNNER_TEMP/finalize.py"
+          python3 - <<'PY'
+          from pathlib import Path
+          lines = Path("Library/Homebrew/overlay.rb").read_text().splitlines()
+          for number in range(1618, 1633):
+              print(f"{number}: {lines[number-1]!r}")
+          for i, line in enumerate(lines, 1):
+              if "def self.keg_record_target" in line:
+                  print("KEG RECORD TARGET:")
+                  for number in range(i, min(i + 12, len(lines) + 1)):
+                      print(f"{number}: {lines[number-1]!r}")
+          PY
