@@ -69,6 +69,7 @@ jobs:
           while IFS= read -r test_script; do
             bash -n "$test_script"
           done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
 
       - name: Run complete overlay recovery matrix
         if: steps.rebase.outputs.changed == 'true'
@@ -84,18 +85,12 @@ jobs:
           set -euo pipefail
           bin/brew tests --no-parallel
 
-      - name: Run RuboCop on the rebased overlay delta
+      - name: Reject style offenses on the rebased overlay delta
         if: steps.rebase.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t changed < <(
-            git diff --name-only --diff-filter=ACMR upstream/main...HEAD -- \
-              '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
-          )
-          if ((${#changed[@]} > 0)); then
-            bin/brew style "${changed[@]}"
-          fi
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
 
       - name: Run Sorbet
         if: steps.rebase.outputs.changed == 'true'
@@ -122,9 +117,13 @@ jobs:
 
           askpass="$(mktemp)"
           trap 'rm -f "${askpass}"' EXIT
-          printf '%s\n' '#!/bin/sh' \
-            'case "$1" in *Username*) printf "%s\\n" x-access-token ;; *) printf "%s\\n" "${OVERLAY_PROMOTION_TOKEN:?}" ;; esac' \
-            >"${askpass}"
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${OVERLAY_PROMOTION_TOKEN:?}" ;;
+          esac
+          ASKPASS
           chmod 0700 "${askpass}"
 
           GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \

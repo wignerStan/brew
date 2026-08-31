@@ -406,6 +406,21 @@ module Homebrew::EnvConfig
     sig { returns(T::Boolean) }
     def no_verify_attestations?; end
 
+    sig { returns(T::Boolean) }
+    def overlay?; end
+
+    sig { returns(T::Boolean) }
+    def overlay_active?; end
+
+    sig { returns(T.nilable(::String)) }
+    def overlay_base_prefix; end
+
+    sig { returns(T::Boolean) }
+    def overlay_force?; end
+
+    sig { returns(T.nilable(::String)) }
+    def overlay_user_prefix; end
+
     sig { returns(String) }
     def pip_index_url; end
 

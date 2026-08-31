@@ -601,7 +601,7 @@ class FormulaInstaller
       @overlay_base_generation = Homebrew::Overlay.current_base_generation
       @overlay_transaction = Homebrew::Overlay.begin_formula_transaction(
         formula,
-        base_generation: T.must(@overlay_base_generation),
+        base_generation: @overlay_base_generation,
       )
       unless @overlay_transaction
         Homebrew::Overlay.validate_local_install_target!(formula.name, formula.pkg_version.to_s)

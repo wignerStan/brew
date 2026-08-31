@@ -1,4 +1,4 @@
-# typed: strict
+# typed: true
 # frozen_string_literal: true
 
 require "keg"
@@ -313,6 +313,10 @@ RSpec.describe Homebrew::Overlay do
   end
 
   it "rejects a transaction marker path replaced after opening" do
+    transaction = T.let(nil, T.nilable(Homebrew::Overlay::FormulaTransaction))
+    marker = T.let(nil, T.nilable(Pathname))
+    opened_marker = T.let(nil, T.nilable(Pathname))
+
     add_base_formula("foo", "1.0")
     transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
     stage(transaction)
@@ -336,7 +340,7 @@ RSpec.describe Homebrew::Overlay do
       transaction.commit!
     end.to raise_error(Homebrew::Overlay::TransactionFailure, /unsafe overlay formula transaction marker/)
   ensure
-    marker&.unlink if marker&.exist? || marker&.symlink?
+    marker.unlink if marker&.exist? || marker&.symlink?
     opened_marker&.rename(marker) if opened_marker&.exist?
     transaction&.rollback! unless transaction&.finished?
   end
@@ -583,7 +587,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "marks the prefix dirty before advancing its generation" do
     script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-    descriptor = described_class::MUTATION_LOCK_DESCRIPTOR
+    descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR
 
     expect(Homebrew).to receive(:safe_system).ordered do |environment, command, path, action, argument, **options|
       expect(environment).to include("HOMEBREW_OVERLAY_MUTATION_LOCK_FD" => descriptor.to_s)

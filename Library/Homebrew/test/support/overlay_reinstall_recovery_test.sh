@@ -5,7 +5,8 @@ umask 077
 
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
-# shellcheck source=../../utils/overlay.sh
+# The repository root is resolved at runtime, so ShellCheck cannot follow this source statically.
+# shellcheck disable=SC1091
 source "${repo}/Library/Homebrew/utils/overlay.sh"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/homebrew-overlay-reinstall-recovery.XXXXXX")"

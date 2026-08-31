@@ -46,7 +46,8 @@ class FormulaPin
 
   sig { returns(T::Boolean) }
   def pinned?
-    return false unless path.symlink? && path.exist?
+    return false unless path.symlink?
+    return false unless path.exist?
 
     !Homebrew::Overlay.inherited_keg?(path.resolved_path)
   rescue SystemCallError

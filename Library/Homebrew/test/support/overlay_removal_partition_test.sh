@@ -8,11 +8,13 @@ set -euo pipefail
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
 
-python3 - \
-  "${repo}/Library/Homebrew/uninstall.rb" \
-  "${repo}/Library/Homebrew/cleanup.rb" \
-  "${repo}/Library/Homebrew/utils/autoremove.rb" \
-  "${repo}/Library/Homebrew/keg.rb" <<'PY'
+source_files=(
+  "${repo}/Library/Homebrew/uninstall.rb"
+  "${repo}/Library/Homebrew/cleanup.rb"
+  "${repo}/Library/Homebrew/utils/autoremove.rb"
+  "${repo}/Library/Homebrew/keg.rb"
+)
+python3 - "${source_files[@]}" <<'PY'
 from pathlib import Path
 import sys
 

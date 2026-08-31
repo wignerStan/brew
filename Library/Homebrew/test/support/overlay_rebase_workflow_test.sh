@@ -5,9 +5,11 @@ set -euo pipefail
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
 
-python3 - \
-  "${repo}/.github/workflows/rebase-upstream-overlay.yml" \
-  "${repo}/.github/workflows/overlay-validation.yml" <<'PY'
+workflow_files=(
+  "${repo}/.github/workflows/rebase-upstream-overlay.yml"
+  "${repo}/.github/workflows/overlay-validation.yml"
+)
+python3 - "${workflow_files[@]}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -24,7 +26,7 @@ required = [
     "git rebase upstream/main",
     "overlay_final_review_reproducer.sh",
     "bin/brew tests --no-parallel",
-    "bin/brew style",
+    "python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD",
     "bin/brew typecheck",
     "HEAD:refs/heads/automation/overlay-rebase-candidate",
     "--force-with-lease=refs/heads/overlay-store:${BEFORE}",

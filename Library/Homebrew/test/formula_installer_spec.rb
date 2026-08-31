@@ -123,11 +123,11 @@ RSpec.describe FormulaInstaller do
       )
       allow(Homebrew::EnvConfig).to receive(:overlay?).and_return(true)
       allow(Homebrew::Overlay).to receive_messages(
-        active?:                       true,
-        acquire_base_mutation_lease:   base_lease,
-        begin_formula_transaction:     nil,
-        current_base_generation:       generation,
-        local_keg_realization?:        false,
+        active?:                        true,
+        acquire_base_mutation_lease:    base_lease,
+        begin_formula_transaction:      nil,
+        current_base_generation:        generation,
+        local_keg_realization?:         false,
         validate_local_install_target!: nil,
       )
       allow(Homebrew::Overlay).to receive(:mutation_active?) { mutation_active }

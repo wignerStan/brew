@@ -2,6 +2,8 @@ name: Validate native overlay
 
 on:
   pull_request:
+    branches:
+      - overlay-store
     paths:
       - '.github/workflows/**'
       - 'Library/Homebrew/**'
@@ -30,24 +32,34 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
-      - name: Fetch comparison bases
+      - name: Fetch overlay-store comparison base
         shell: bash
         run: |
           set -euo pipefail
-          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
-            git remote set-url upstream https://github.com/Homebrew/brew.git
-          git fetch --prune upstream main
-          git branch -f main upstream/main
+          git fetch --prune origin overlay-store
 
       - name: Check formatting and shell syntax
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check upstream/main...HEAD
+          git diff --check origin/overlay-store...HEAD
           bash -n bin/brew Library/Homebrew/utils/overlay.sh
           while IFS= read -r test_script; do
             bash -n "$test_script"
           done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+      - name: Reject style offenses on overlay changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py origin/overlay-store HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
 
       - name: Run complete overlay recovery matrix
         shell: bash
@@ -60,21 +72,3 @@ jobs:
         run: |
           set -euo pipefail
           bin/brew tests --no-parallel
-
-      - name: Run RuboCop on overlay delta
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t changed < <(
-            git diff --name-only --diff-filter=ACMR upstream/main...HEAD -- \
-              '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
-          )
-          if ((${#changed[@]} > 0)); then
-            bin/brew style "${changed[@]}"
-          fi
-
-      - name: Run Sorbet
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin/brew typecheck
