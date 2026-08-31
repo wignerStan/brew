@@ -92,6 +92,22 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
           path.write_text(text.replace(old, new, 1))
+
+          spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
+          spec = spec_path.read_text()
+          old_cleanup = '''  ensure
+            marker&.unlink if marker&.exist? || marker&.symlink?
+            opened_marker&.rename(marker) if opened_marker&.exist?
+            transaction&.rollback! unless transaction&.finished?
+          '''
+          new_cleanup = '''  ensure
+            marker.unlink if marker&.exist? || marker&.symlink?
+            opened_marker&.rename(marker) if opened_marker&.exist?
+            transaction&.rollback! unless transaction&.finished?
+          '''
+          if spec.count(old_cleanup) != 1:
+              raise SystemExit(f"expected one marker replacement cleanup context, found {spec.count(old_cleanup)}")
+          spec_path.write_text(spec.replace(old_cleanup, new_cleanup, 1))
           PY
           git show origin/automation/overlay-review-ci-fix:.github/overlay-validation.final.yml >.github/workflows/overlay-validation.yml
           git show origin/automation/overlay-review-ci-fix:.github/rebase-upstream-overlay.final.yml >.github/workflows/rebase-upstream-overlay.yml
