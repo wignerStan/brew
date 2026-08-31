@@ -39,17 +39,27 @@ jobs:
 
           path = Path(sys.argv[1])
           text = path.read_text()
-          old = '''replace(
+          blocks = [
+              '''replace(
               "Library/Homebrew/overlay.rb",
               "      rescue Exception # rubocop:disable Lint/RescueException\\n",
               "      # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.\\n"
               "      rescue Exception # rubocop:disable Lint/RescueException\\n",
               count=1,
           )
-          '''
-          if old not in text:
-              raise SystemExit("generic rescue replacement not found in staged fixer")
-          path.write_text(text.replace(old, "", 1))
+          ''',
+              '''replace(
+              "Library/Homebrew/test/overlay_spec.rb",
+              "    opened_marker&.rename(marker) if opened_marker&.exist?\\n",
+              "    opened_marker&.rename(T.must(marker)) if opened_marker&.exist?\\n",
+          )
+          ''',
+          ]
+          for block in blocks:
+              if block not in text:
+                  raise SystemExit(f"staged fixer block not found: {block.splitlines()[1:3]}")
+              text = text.replace(block, "", 1)
+          path.write_text(text)
           PY
 
       - name: Apply reviewed fixes
