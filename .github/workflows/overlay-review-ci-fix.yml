@@ -33,12 +33,50 @@ jobs:
           test "$(git rev-parse HEAD)" = "68353eca5d9034d10c5c055375e99ae4a47be564"
           test "$(git rev-parse origin/overlay-store)" = "2b0f7e28d76e2d51fb75e28f0bc71f00dabd4a5c"
           git show origin/automation/overlay-review-ci-fix:.github/overlay-review-fix.py >"$RUNNER_TEMP/overlay-review-fix.py"
+          python3 - "$RUNNER_TEMP/overlay-review-fix.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          old = '''replace(
+              "Library/Homebrew/overlay.rb",
+              "      rescue Exception # rubocop:disable Lint/RescueException\\n",
+              "      # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.\\n"
+              "      rescue Exception # rubocop:disable Lint/RescueException\\n",
+              count=1,
+          )
+          '''
+          if old not in text:
+              raise SystemExit("generic rescue replacement not found in staged fixer")
+          path.write_text(text.replace(old, "", 1))
+          PY
 
       - name: Apply reviewed fixes
         shell: bash
         run: |
           set -euo pipefail
           python3 "$RUNNER_TEMP/overlay-review-fix.py"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("Library/Homebrew/overlay.rb")
+          text = path.read_text()
+          old = '''        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)
+                  Overlay.clear_caches!
+                  self
+                rescue Exception # rubocop:disable Lint/RescueException
+          '''
+          new = '''        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)
+                  Overlay.clear_caches!
+                  self
+                # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.
+                rescue Exception # rubocop:disable Lint/RescueException
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
           git diff --check
           bash -n bin/brew Library/Homebrew/utils/overlay.sh
           while IFS= read -r test_script; do
