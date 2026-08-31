@@ -47,6 +47,13 @@ replace_once(
         raise TransactionFailure, "refusing to collapse non-inherited formula rack: #{rack}" unless inherited_child
 ''',
 )
+replace_once(
+    "Library/Homebrew/overlay.rb",
+    "      return unless path.symlink?\n"
+    "      return unless path.directory?\n\n",
+    "      return unless path.symlink?\n\n"
+    "      return unless path.directory?\n\n",
+)
 
 spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
 spec = spec_path.read_text()
