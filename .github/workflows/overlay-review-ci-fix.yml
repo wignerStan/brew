@@ -1,4 +1,4 @@
-name: Report overlay hardening style offenses
+name: Report changed-line overlay style regressions
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
           ref: fix/overlay-review-hardening
           fetch-depth: 0
 
-      - name: Report candidate style output safely
+      - name: Report offenses on added or modified lines
         shell: bash
         run: |
           set -euo pipefail
@@ -36,20 +36,66 @@ jobs:
               '*.rb' '*.rbi' '*.sh' '*.yml' '*.yaml' bin/brew
           )
           log="$RUNNER_TEMP/candidate-style.log"
+          patch="$RUNNER_TEMP/candidate.patch"
+          git diff --unified=0 --no-color origin/overlay-store...HEAD -- "${changed[@]}" >"$patch"
           set +e
           bin/brew style --display-cop-names "${changed[@]}" >"$log" 2>&1
           status=$?
           set -e
           echo "style status=$status"
-          python3 - "$log" <<'PY'
+          python3 - "$patch" "$log" <<'PY'
+          import collections
           import re
           import sys
 
+          patch_path, log_path = sys.argv[1:]
+          ranges = collections.defaultdict(list)
+          current = None
+          hunk = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+          with open(patch_path, encoding="utf-8", errors="replace") as handle:
+              for line in handle:
+                  if line.startswith("+++ b/"):
+                      current = line[6:].rstrip("\n")
+                  elif current:
+                      match = hunk.match(line)
+                      if match:
+                          start = int(match.group(1))
+                          count = int(match.group(2) or "1")
+                          if count:
+                              ranges[current].append((start, start + count - 1))
+
+          def changed_line(path, lineno):
+              return any(start <= lineno <= end for start, end in ranges.get(path, ()))
+
           ansi = re.compile(r"\x1b\[[0-9;]*m")
-          rubocop = re.compile(r"^.*?:\d+:\d+: [A-Z]: ")
-          with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+          action_error = re.compile(r"^::error file=([^,]+),line=(\d+)(?:,[^:]*)?::(.*)$")
+          plain = re.compile(r"^([^:]+):(?P<line>\d+):\d+: (.*)$")
+          found = []
+          with open(log_path, encoding="utf-8", errors="replace") as handle:
               for raw in handle:
                   line = ansi.sub("", raw.rstrip("\n"))
-                  if rubocop.match(line) or line.startswith("::error") or "shellcheck" in line.lower():
-                      print(repr(line))
+                  match = action_error.match(line)
+                  if match:
+                      path, lineno, message = match.group(1), int(match.group(2)), match.group(3)
+                  else:
+                      match = plain.match(line)
+                      if not match:
+                          continue
+                      path, lineno, message = match.group(1), int(match.group("line")), match.group(3)
+                      if not ("shellcheck" in message.lower() or re.match(r"[A-Z]: ", message)):
+                          continue
+                      if path.startswith("Library/Homebrew/"):
+                          pass
+                      elif path.startswith((".github/", "bin/")):
+                          pass
+                      else:
+                          path = f"Library/Homebrew/{path}"
+                  if changed_line(path, lineno):
+                      key = (path, lineno, message)
+                      if key not in found:
+                          found.append(key)
+
+          print(f"changed-line offenses={len(found)}")
+          for path, lineno, message in found:
+              print(f"CHANGED {path}:{lineno}: {message}")
           PY
