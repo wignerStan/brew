@@ -59,6 +59,12 @@ jobs:
               if block not in text:
                   raise SystemExit(f"staged fixer block not found: {block.splitlines()[1:3]}")
               text = text.replace(block, "", 1)
+
+          workflow_marker = 'replace(\n    ".github/workflows/overlay-validation.yml",'
+          index = text.find(workflow_marker)
+          if index < 0:
+              raise SystemExit("workflow rewrite marker not found in staged fixer")
+          text = text[:index]
           path.write_text(text)
           PY
 
@@ -87,6 +93,8 @@ jobs:
               raise SystemExit(f"expected one reinstall rescue context, found {text.count(old)}")
           path.write_text(text.replace(old, new, 1))
           PY
+          git show origin/automation/overlay-review-ci-fix:.github/overlay-validation.final.yml >.github/workflows/overlay-validation.yml
+          git show origin/automation/overlay-review-ci-fix:.github/rebase-upstream-overlay.final.yml >.github/workflows/rebase-upstream-overlay.yml
           git diff --check
           bash -n bin/brew Library/Homebrew/utils/overlay.sh
           while IFS= read -r test_script; do
