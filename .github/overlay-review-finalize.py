@@ -68,6 +68,11 @@ replace_once(
           entries[relative] = target
 ''',
 )
+replace_once(
+    "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+    '    "overlay_style_delta_check.py",\n',
+    '    "python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD",\n',
+)
 
 spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
 spec = spec_path.read_text()
