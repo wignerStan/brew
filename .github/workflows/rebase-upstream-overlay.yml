@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   rebase:
-    if: github.repository == 'wignerStan/brew'
+    if: github.repository == 'wangzheng15534-blip/brew'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the custom branch
