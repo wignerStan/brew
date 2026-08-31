@@ -54,6 +54,20 @@ replace_once(
     "      return unless path.symlink?\n\n"
     "      return unless path.directory?\n\n",
 )
+replace_once(
+    "Library/Homebrew/overlay.rb",
+    '''          if expected.nil? || target != expected || entries.key?(relative)
+            raise TransactionFailure, "invalid overlay view state: #{state}"
+          end
+          entries[relative] = target
+''',
+    '''          if expected.nil? || target != expected || entries.key?(relative)
+            raise TransactionFailure, "invalid overlay view state: #{state}"
+          end
+
+          entries[relative] = target
+''',
+)
 
 spec_path = Path("Library/Homebrew/test/overlay_spec.rb")
 spec = spec_path.read_text()
