@@ -101,11 +101,6 @@ jobs:
           )
           replace(
               "Library/Homebrew/test/overlay_spec.rb",
-              "    opened_marker&.rename(marker) if opened_marker&.exist?\n",
-              "    opened_marker&.rename(T.must(marker)) if opened_marker&.exist?\n",
-          )
-          replace(
-              "Library/Homebrew/test/overlay_spec.rb",
               "    descriptor = described_class::MUTATION_LOCK_DESCRIPTOR\n",
               "    descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR\n",
           )
