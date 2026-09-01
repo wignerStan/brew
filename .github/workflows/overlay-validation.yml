@@ -4,11 +4,6 @@ on:
   pull_request:
     branches:
       - overlay-store
-    paths:
-      - '.github/workflows/**'
-      - 'Library/Homebrew/**'
-      - 'bin/brew'
-      - 'docs/Native-User-Overlay*'
   push:
     branches:
       - 'fix/overlay-*'
@@ -32,6 +27,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch overlay-store comparison base
         shell: bash
@@ -46,7 +42,7 @@ jobs:
           git diff --check origin/overlay-store...HEAD
           bash -n bin/brew Library/Homebrew/utils/overlay.sh
           while IFS= read -r test_script; do
-            bash -n "$test_script"
+            bash -n "${test_script}"
           done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
           python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
 
