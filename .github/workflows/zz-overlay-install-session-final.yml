@@ -1,4 +1,4 @@
-name: Final overlay install session validation
+name: Generate clean overlay install session candidate
 
 on:
   push:
@@ -9,21 +9,25 @@ permissions:
   contents: write
 
 jobs:
-  apply:
-    if: github.event.head_commit.message == 'Run final overlay install session validation'
+  generate:
+    if: github.event.head_commit.message == 'Generate clean overlay install session candidate'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out work branch
+      - name: Check out disposable work branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: refactor/overlay-maintainability
           fetch-depth: 0
 
-      - name: Repair, validate, and publish source tree
+      - name: Build and validate a source-only commit
         shell: bash
+        env:
+          BASE_SHA: c45f65b1a7840d5b6996088e7c63747f33868219
+          CANDIDATE_BRANCH: automation/overlay-install-session-generated
         run: |
           set -euo pipefail
+
           python3 <<'PY'
           from pathlib import Path
           from textwrap import dedent, indent
@@ -36,7 +40,9 @@ jobs:
               position = method.rfind(rescue)
               if position < 0:
                   raise SystemExit(f"missing final broad rescue after {method_marker!r}")
-              method = method[:position] + f"  # {comment}\n" + method[position:]
+              explanatory = f"  # {comment}\n"
+              if method[max(0, position - len(explanatory)):position] != explanatory:
+                  method = method[:position] + explanatory + method[position:]
               return source[:start] + method + source[end:]
 
           session_path = Path("Library/Homebrew/overlay/install_session.rb")
@@ -45,13 +51,13 @@ jobs:
           start = session.index("        raise TransactionFailure,\n", method)
           end_marker = "\n      end\n\n      sig { void }\n      def rollback_uncommitted_local_keg!"
           end = session.index(end_marker, start)
-          new_error = '''        message = [
+          error_body = '''        message = [
             "#{formula_full_name} failed before its private keg was committed;",
             "uncommitted package state was discarded",
           ].join(" ")
           raise TransactionFailure, message
           '''
-          session_path.write_text(session[:start] + new_error + session[end:], encoding="utf-8")
+          session_path.write_text(session[:start] + error_body + session[end:], encoding="utf-8")
 
           installer_path = Path("Library/Homebrew/formula_installer.rb")
           installer = installer_path.read_text(encoding="utf-8")
@@ -75,7 +81,7 @@ jobs:
           next_test_marker = '    it "runs structured post-install work through the post-install subprocess" do\n'
           start = formula_spec.index(describe_marker) + len(describe_marker)
           end = formula_spec.index(next_test_marker, start)
-          replacement = "\n" + indent(
+          replacement = indent(
               dedent(
                   '''\
                   it "aborts and closes the overlay session when publication validation fails" do
@@ -183,30 +189,47 @@ jobs:
           )
           PY
 
+          # These two files are new in this refactor slice, so whole-file
+          # correction cannot rewrite pre-existing Homebrew implementation.
           bin/brew style --fix \
             Library/Homebrew/overlay/install_session.rb \
             Library/Homebrew/test/overlay/install_session_spec.rb
 
-          git rm \
-            .github/workflows/zz-overlay-install-session-prevalidate.yml \
-            .github/workflows/zz-overlay-install-session-final.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/overlay.rb \
-            Library/Homebrew/overlay/README.md \
-            Library/Homebrew/overlay/install_session.rb \
-            Library/Homebrew/test/formula_installer_spec.rb \
-            Library/Homebrew/test/overlay/install_session_spec.rb \
+          paths=(
+            Library/Homebrew/formula_installer.rb
+            Library/Homebrew/overlay.rb
+            Library/Homebrew/overlay/README.md
+            Library/Homebrew/overlay/install_session.rb
+            Library/Homebrew/test/formula_installer_spec.rb
+            Library/Homebrew/test/overlay/install_session_spec.rb
             Library/Homebrew/test/support/overlay_architecture_test.sh
-          git commit -m "Validate overlay install session boundary"
+          )
 
-          git diff --check c45f65b1a7840d5b6996088e7c63747f33868219...HEAD
+          index_file="$(mktemp)"
+          rm -f "${index_file}"
+          GIT_INDEX_FILE="${index_file}" git read-tree "${BASE_SHA}"
+          GIT_INDEX_FILE="${index_file}" git add -- "${paths[@]}"
+          GIT_INDEX_FILE="${index_file}" git update-index \
+            --chmod=+x Library/Homebrew/test/support/overlay_architecture_test.sh
+          clean_tree="$(GIT_INDEX_FILE="${index_file}" git write-tree)"
+          rm -f "${index_file}"
+
+          export GIT_AUTHOR_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          clean_commit="$(printf '%s\n' 'Delegate overlay install lifecycle' | \
+            git commit-tree "${clean_tree}" -p "${BASE_SHA}")"
+
+          git checkout --detach "${clean_commit}"
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" -eq 1
+          test -z "$(git rev-list --merges "${BASE_SHA}..HEAD")"
+          git diff --check "${BASE_SHA}...HEAD"
           bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
-          python3 Library/Homebrew/test/support/overlay_style_delta_check.py \
-            c45f65b1a7840d5b6996088e7c63747f33868219 HEAD
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${BASE_SHA}" HEAD
           bin/brew typecheck
           bin/brew tests --no-parallel --only=formula_installer,overlay/install_session
 
-          git push origin HEAD:refactor/overlay-maintainability
+          git push --force origin \
+            "${clean_commit}:refs/heads/${CANDIDATE_BRANCH}"
+          printf 'clean_candidate=%s\n' "${clean_commit}"
