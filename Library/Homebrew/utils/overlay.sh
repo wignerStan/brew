@@ -8,4 +8,5 @@ then
   exec /bin/bash "${BASH_SOURCE[0]%/*}/overlay/core.sh" "$@"
 fi
 
+# shellcheck source=Homebrew/utils/overlay/core.sh
 source "${BASH_SOURCE[0]%/*}/overlay/core.sh"

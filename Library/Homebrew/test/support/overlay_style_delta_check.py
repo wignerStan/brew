@@ -10,15 +10,36 @@ base, head = sys.argv[1:]
 comparison = f"{base}...{head}"
 filters = ["*.rb", "*.rbi", "*.sh", "*.yml", "*.yaml", "bin/brew"]
 changed = subprocess.check_output(
-    ["git", "diff", "--name-only", "--diff-filter=ACMR", comparison, "--", *filters],
+    [
+        "git",
+        "diff",
+        "--find-renames",
+        "--name-only",
+        "--diff-filter=ACMR",
+        comparison,
+        "--",
+        *filters,
+    ],
     text=True,
 ).splitlines()
 if not changed:
     print("changed-line style gate: PASS (no style-relevant files)")
     raise SystemExit(0)
 
+# Keep the broad style pathspec here instead of narrowing it to destination
+# paths. Git needs both sides of a rename in view; otherwise a pure move looks
+# like a full-file addition and every pre-existing offense becomes "new".
 patch = subprocess.check_output(
-    ["git", "diff", "--unified=0", "--no-color", comparison, "--", *changed],
+    [
+        "git",
+        "diff",
+        "--find-renames",
+        "--unified=0",
+        "--no-color",
+        comparison,
+        "--",
+        *filters,
+    ],
     text=True,
 )
 style = subprocess.run(

@@ -9,6 +9,7 @@ core="${repo}/Library/Homebrew/utils/overlay/core.sh"
 bash -n "${loader}" "${core}"
 
 (
+  # shellcheck source=Homebrew/utils/overlay.sh
   source "${loader}"
   declare -F homebrew-overlay-bootstrap >/dev/null
   homebrew-overlay-truthy yes
