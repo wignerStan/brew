@@ -89,6 +89,19 @@ jobs:
               raise SystemExit('unexpected generator heredoc shape')
           script = script.replace(opening, "python3 <<'PY_GENERATOR'\n", 1)
           script = script.replace(closing, "\nPY_GENERATOR\n\nchmod +x", 1)
+
+          style_marker = 'mapfile -t paths </tmp/overlay-review-followup-paths\n'
+          style_fix = (
+              'bin/brew style --fix \\\n'
+              '  Library/Homebrew/overlay/core.rb \\\n'
+              '  Library/Homebrew/overlay/install_session.rb \\\n'
+              '  Library/Homebrew/test/overlay/core_spec.rb \\\n'
+              '  Library/Homebrew/test/overlay/reinstall_backup_spec.rb\n\n'
+              + style_marker
+          )
+          if script.count(style_marker) != 1:
+              raise SystemExit('unexpected candidate assembly marker')
+          script = script.replace(style_marker, style_fix, 1)
           Path('/tmp/overlay-review-followup-generator.sh').write_text(script, encoding='utf-8')
           PY
           bash /tmp/overlay-review-followup-generator.sh
