@@ -22,6 +22,9 @@ jobs:
 
       - name: Execute the reviewed generator payload outside workflow parsing
         shell: bash
+        env:
+          BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
+          CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
         run: |
           set -euo pipefail
           git cat-file blob 4bff114a0de29f55acbb48b547d3a61fc75153e5 > /tmp/original-generator.yml
