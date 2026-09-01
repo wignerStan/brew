@@ -52,7 +52,12 @@ jobs:
           '''
           if old not in source:
               raise SystemExit('generator insertion helper did not match')
-          path.write_text(source.replace(old, new), encoding='utf-8')
+          source = source.replace(old, new)
+          event_literal = '        """      [:write, base_marker,'
+          if source.count(event_literal) != 2:
+              raise SystemExit('generator event literals did not match')
+          source = source.replace(event_literal, '        r"""      [:write, base_marker,')
+          path.write_text(source, encoding='utf-8')
           PY
 
           git config user.name "github-actions[bot]"
