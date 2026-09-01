@@ -1,0 +1,1553 @@
+name: Generate overlay review follow-up candidate
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-followup-work
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.event.head_commit.message == 'Generate overlay review follow-up candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out generator branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-review-followup-work
+          fetch-depth: 0
+
+      - name: Build and validate clean follow-up commit
+        shell: bash
+        env:
+          BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
+          CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          import re
+
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return source.replace(old, new)
+
+          rebase_workflow = dedent(r'''\
+          name: Rebase and validate overlay branch
+
+          on:
+            workflow_dispatch:
+            schedule:
+              - cron: "17 4 * * *"
+
+          permissions: {}
+
+          concurrency:
+            group: rebase-overlay-branch
+            cancel-in-progress: false
+
+          env:
+            CI: "1"
+            HOMEBREW_DEVELOPER: "1"
+            HOMEBREW_NO_AUTO_UPDATE: "1"
+
+          jobs:
+            prepare:
+              if: github.repository == 'wangzheng15534-blip/brew'
+              runs-on: ubuntu-latest
+              timeout-minutes: 30
+              permissions:
+                contents: write
+              outputs:
+                changed: ${{ steps.rebase.outputs.changed }}
+                before: ${{ steps.rebase.outputs.before }}
+                after: ${{ steps.rebase.outputs.after }}
+                tree: ${{ steps.rebase.outputs.tree }}
+              steps:
+                - name: Check out the deployment branch without persisted credentials
+                  uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+                  with:
+                    ref: overlay-store
+                    fetch-depth: 0
+                    persist-credentials: false
+
+                - name: Rebase onto current Homebrew main
+                  id: rebase
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+
+                    git config user.name "github-actions[bot]"
+                    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                    git config core.hooksPath /dev/null
+                    git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+                      git remote set-url upstream https://github.com/Homebrew/brew.git
+                    git fetch --prune origin overlay-store
+                    git fetch --prune upstream main
+                    git checkout --detach origin/overlay-store
+
+                    before="$(git rev-parse HEAD)"
+                    printf 'before=%s\n' "${before}" >>"${GITHUB_OUTPUT}"
+                    if ! git -c core.hooksPath=/dev/null rebase upstream/main; then
+                      git rebase --abort || true
+                      echo "Upstream rebase has semantic conflicts; overlay-store was left unchanged." >&2
+                      exit 1
+                    fi
+                    after="$(git rev-parse HEAD)"
+                    tree="$(git rev-parse 'HEAD^{tree}')"
+                    printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+                    printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
+                    if [[ "${before}" == "${after}" ]]; then
+                      printf 'changed=false\n' >>"${GITHUB_OUTPUT}"
+                    else
+                      printf 'changed=true\n' >>"${GITHUB_OUTPUT}"
+                    fi
+
+                - name: Publish the immutable candidate with the repository token
+                  if: steps.rebase.outputs.changed == 'true'
+                  shell: bash
+                  env:
+                    AFTER: ${{ steps.rebase.outputs.after }}
+                    EXPECTED_TREE: ${{ steps.rebase.outputs.tree }}
+                    PREPARE_TOKEN: ${{ github.token }}
+                  run: |
+                    set -euo pipefail
+                    test "$(git rev-parse HEAD)" = "${AFTER}"
+                    test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+
+                    askpass="$(mktemp)"
+                    trap 'rm -f "${askpass}"' EXIT
+                    cat >"${askpass}" <<'ASKPASS'
+                    #!/bin/sh
+                    case "$1" in
+                      *Username*) printf '%s\n' x-access-token ;;
+                      *) printf '%s\n' "${PREPARE_TOKEN:?}" ;;
+                    esac
+                    ASKPASS
+                    chmod 0700 "${askpass}"
+
+                    candidate_ref=refs/heads/automation/overlay-rebase-candidate
+                    candidate_before="$(
+                      GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+                        git ls-remote --heads origin "${candidate_ref}" | awk '{print $1}'
+                    )"
+                    GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+                      git push \
+                        --force-with-lease="${candidate_ref}:${candidate_before}" \
+                        origin "${AFTER}:${candidate_ref}"
+
+            validate:
+              needs: prepare
+              if: needs.prepare.outputs.changed == 'true'
+              runs-on: ubuntu-latest
+              timeout-minutes: 150
+              permissions:
+                contents: read
+              outputs:
+                validated_sha: ${{ steps.attest.outputs.sha }}
+                validated_tree: ${{ steps.attest.outputs.tree }}
+              steps:
+                - name: Check out the exact proposed SHA on a fresh runner
+                  uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+                  with:
+                    ref: ${{ needs.prepare.outputs.after }}
+                    fetch-depth: 0
+                    persist-credentials: false
+
+                - name: Verify the remote candidate and comparison base
+                  shell: bash
+                  env:
+                    AFTER: ${{ needs.prepare.outputs.after }}
+                    EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+                  run: |
+                    set -euo pipefail
+                    git config core.hooksPath /dev/null
+                    git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+                      git remote set-url upstream https://github.com/Homebrew/brew.git
+                    git fetch --prune upstream main
+                    git fetch --prune origin automation/overlay-rebase-candidate
+                    test "$(git rev-parse HEAD)" = "${AFTER}"
+                    test "$(git rev-parse FETCH_HEAD)" = "${AFTER}"
+                    test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+
+                - name: Validate patch formatting and shell syntax
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    git diff --check upstream/main...HEAD
+                    bash -n bin/brew Library/Homebrew/utils/overlay.sh
+                    while IFS= read -r test_script; do
+                      bash -n "${test_script}"
+                    done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+                    python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+                - name: Run complete overlay recovery matrix
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+                - name: Run full Homebrew RSpec suite
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bin/brew tests --no-parallel
+
+                - name: Reject style offenses on the rebased overlay delta
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+                - name: Run Sorbet
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bin/brew typecheck
+
+                - name: Attest the exact validated commit and tree
+                  id: attest
+                  shell: bash
+                  env:
+                    AFTER: ${{ needs.prepare.outputs.after }}
+                    EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+                  run: |
+                    set -euo pipefail
+                    test "$(git rev-parse HEAD)" = "${AFTER}"
+                    test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+                    printf 'sha=%s\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
+                    printf 'tree=%s\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
+
+            promote:
+              needs: [prepare, validate]
+              if: needs.prepare.outputs.changed == 'true' && needs.validate.result == 'success'
+              runs-on: ubuntu-latest
+              timeout-minutes: 15
+              environment: overlay-promotion
+              permissions: {}
+              steps:
+                - name: Promote only the exact validated object on a fresh runner
+                  shell: bash
+                  env:
+                    BEFORE: ${{ needs.prepare.outputs.before }}
+                    AFTER: ${{ needs.prepare.outputs.after }}
+                    EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+                    VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
+                    VALIDATED_TREE: ${{ needs.validate.outputs.validated_tree }}
+                    OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
+                  run: |
+                    set -euo pipefail
+                    if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
+                      echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+                      exit 1
+                    fi
+                    test "${AFTER}" = "${VALIDATED_SHA}"
+                    test "${EXPECTED_TREE}" = "${VALIDATED_TREE}"
+
+                    isolated_home="$(mktemp -d)"
+                    repository="$(mktemp -d)"
+                    template_dir="$(mktemp -d)"
+                    askpass="$(mktemp)"
+                    trap 'rm -rf "${isolated_home}" "${repository}" "${template_dir}"; rm -f "${askpass}"' EXIT
+                    export HOME="${isolated_home}"
+                    export PATH=/usr/bin:/bin
+                    export GIT_CONFIG_NOSYSTEM=1
+                    export GIT_CONFIG_GLOBAL=/dev/null
+                    export GIT_TEMPLATE_DIR="${template_dir}"
+
+                    cat >"${askpass}" <<'ASKPASS'
+                    #!/bin/sh
+                    case "$1" in
+                      *Username*) printf '%s\n' x-access-token ;;
+                      *) printf '%s\n' "${OVERLAY_PROMOTION_TOKEN:?}" ;;
+                    esac
+                    ASKPASS
+                    chmod 0700 "${askpass}"
+
+                    /usr/bin/git init "${repository}"
+                    /usr/bin/git -C "${repository}" config core.hooksPath /dev/null
+                    /usr/bin/git -C "${repository}" remote add origin \
+                      https://github.com/wangzheng15534-blip/brew.git
+                    GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+                      /usr/bin/git -C "${repository}" -c protocol.file.allow=never fetch \
+                        --no-tags --prune origin \
+                        +refs/heads/automation/overlay-rebase-candidate:refs/remotes/origin/candidate \
+                        +refs/heads/overlay-store:refs/remotes/origin/overlay-store
+
+                    test "$(/usr/bin/git -C "${repository}" rev-parse refs/remotes/origin/candidate)" = "${AFTER}"
+                    test "$(/usr/bin/git -C "${repository}" rev-parse refs/remotes/origin/overlay-store)" = "${BEFORE}"
+                    test "$(/usr/bin/git -C "${repository}" rev-parse "${AFTER}^{tree}")" = "${EXPECTED_TREE}"
+
+                    GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+                      /usr/bin/git -C "${repository}" push \
+                        --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+                        origin ${AFTER}:refs/heads/overlay-store
+          ''')
+          Path(".github/workflows/rebase-upstream-overlay.yml").write_text(rebase_workflow, encoding="utf-8")
+
+          validation_workflow = dedent(r'''\
+          name: Validate native overlay
+
+          on:
+            pull_request:
+              branches:
+                - overlay-store
+            push:
+              branches:
+                - 'fix/overlay-*'
+                - 'refactor/overlay-*'
+
+          permissions:
+            contents: read
+
+          env:
+            CI: "1"
+            HOMEBREW_DEVELOPER: "1"
+            HOMEBREW_NO_AUTO_UPDATE: "1"
+
+          jobs:
+            validate:
+              runs-on: ubuntu-latest
+              timeout-minutes: 150
+              steps:
+                - name: Check out exact candidate
+                  uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+                  with:
+                    ref: ${{ github.event.pull_request.head.sha || github.sha }}
+                    fetch-depth: 0
+                    persist-credentials: false
+
+                - name: Fetch overlay-store comparison base
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    git fetch --prune origin overlay-store
+
+                - name: Check formatting and shell syntax
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    git diff --check origin/overlay-store...HEAD
+                    bash -n bin/brew Library/Homebrew/utils/overlay.sh
+                    while IFS= read -r test_script; do
+                      bash -n "${test_script}"
+                    done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+                    python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+                - name: Reject style offenses on overlay changes
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python3 Library/Homebrew/test/support/overlay_style_delta_check.py origin/overlay-store HEAD
+
+                - name: Run Sorbet
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bin/brew typecheck
+
+                - name: Run complete overlay recovery matrix
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+                - name: Run full Homebrew RSpec suite
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    bin/brew tests --no-parallel
+          ''')
+          Path(".github/workflows/overlay-validation.yml").write_text(validation_workflow, encoding="utf-8")
+
+          promotion_docs = dedent('''\
+          # Overlay Promotion Credentials
+
+          The scheduled overlay rebase uses three jobs with separate GitHub-hosted runners:
+
+          1. **Prepare** rebases `overlay-store` without executing repository code and publishes the exact result to `automation/overlay-rebase-candidate` using the repository-scoped `GITHUB_TOKEN`.
+          2. **Validate** checks out that exact SHA on a fresh, read-only runner with persisted checkout credentials disabled, then runs the recovery matrix, the full RSpec suite, changed-line style validation, and Sorbet.
+          3. **Promote** starts on another fresh runner, is gated by the protected `overlay-promotion` environment, never checks out or executes candidate files, fetches the exact validated commit into an empty repository with isolated Git configuration, verifies its commit and tree hashes, and updates `overlay-store` with an explicit force-with-lease.
+
+          Promotion requires an Actions secret named `OVERLAY_PROMOTION_TOKEN` in `wangzheng15534-blip/brew`. Prefer a short-lived GitHub App installation token. If a fine-grained personal access token is used, scope it only to that repository with:
+
+          - **Contents: write**, to update `overlay-store`.
+          - **Workflows: write**, because the rebased commit can modify files under `.github/workflows`.
+
+          Protect the `overlay-promotion` environment with required reviewers and restrict which branches may deploy through it. The promotion credential is exposed only inside the final job. Rotate it immediately if any preparation or validation job ever receives it.
+          ''')
+          Path("docs/Overlay-Promotion-Credentials.md").write_text(promotion_docs, encoding="utf-8")
+
+          core_path = Path("Library/Homebrew/overlay/core.rb")
+          core = core_path.read_text(encoding="utf-8")
+          core = replace_once(
+              core,
+              '    @install_transactions = T.let({}, T::Hash[String, T.untyped])\n'
+              '    @mutation_lock = T.let(nil, T.nilable(File))\n',
+              '    @install_transactions = T.let({}, T::Hash[String, T.untyped])\n'
+              '    @reinstall_backups = T.let({}, T::Hash[String, T.untyped])\n'
+              '    @mutation_lock = T.let(nil, T.nilable(File))\n',
+              "reinstall registry",
+          )
+          core = replace_once(
+              core,
+              '''      sig { params(path: Pathname).void }
+              def remove_tree_durable!(path)
+                return unless path.exist? || path.symlink?
+
+                parent = path.parent
+                FileUtils.rm_rf(path)
+                if path.exist? || path.symlink?
+                  raise TransactionFailure, "could not remove overlay transaction path: #{path}"
+                end
+                Overlay.fsync_directory!(parent)
+              end
+''',
+              '''      sig { params(path: Pathname).void }
+              def remove_tree_durable!(path)
+                Overlay.remove_tree_durable!(path)
+              end
+''',
+              "formula cleanup delegation",
+          )
+          core = replace_once(
+              core,
+              '        @metadata_state = T.let(@root/"state", Pathname)\n'
+              '        @owner_lock_path = T.let(@root/"owner.lock", Pathname)\n',
+              '        @metadata_state = T.let(@root/"state", Pathname)\n'
+              '        @metadata_base_generation = T.let(@root/"committed_base_generation", Pathname)\n'
+              '        @metadata_replacement_device = T.let(@root/"committed_device", Pathname)\n'
+              '        @metadata_replacement_inode = T.let(@root/"committed_inode", Pathname)\n'
+              '        @owner_lock_path = T.let(@root/"owner.lock", Pathname)\n',
+              "reinstall commit metadata paths",
+          )
+          core = replace_once(
+              core,
+              '        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)\n'
+              '        Overlay.clear_caches!\n'
+              '        self\n',
+              '        Overlay.durable_atomic_write!(@metadata_state, "backed-up\\n", mode: 0600)\n'
+              '        Overlay.clear_caches!\n'
+              '        Overlay.register_reinstall_backup(self)\n'
+              '        self\n',
+              "register reinstall backup",
+          )
+          core = replace_once(
+              core,
+              '''        ensure
+                  release_owner_lock!
+                end
+                raise
+              end
+
+              sig { returns(T::Boolean) }
+              def committed_replacement?
+                return false unless Overlay.local_keg_realization?(formula_name, version)
+
+                marker = @final_version/BASE_GENERATION_MARKER
+                contents = Overlay.read_owned_file(
+                  marker,
+                  description: "administrator base-generation marker",
+                  max_bytes:   65,
+                )
+                return false if contents.nil?
+
+                generation = contents.chomp
+                Overlay.validate_base_generation!(generation)
+                contents == "#{generation}\\n"
+              end
+''',
+              '''        ensure
+                  Overlay.unregister_reinstall_backup(self)
+                  release_owner_lock!
+                end
+                raise
+              end
+
+              sig { params(keg_path: Pathname).void }
+              def mark_committed!(keg_path)
+                state = validate_control_state!
+                return if state == "committed" && committed_replacement?
+                unless state == "backed-up"
+                  raise TransactionFailure, "overlay reinstall cannot commit from state #{state.inspect}: #{@root}"
+                end
+
+                candidate = keg_path.expand_path
+                unless candidate == @final_version && Overlay.local_keg_realization?(formula_name, version)
+                  raise TransactionFailure, "overlay reinstall replacement is unavailable: #{candidate}"
+                end
+                replacement_stat = candidate.lstat
+                unless replacement_stat.directory? && replacement_stat.uid == Process.uid
+                  raise TransactionFailure, "unsafe overlay reinstall replacement: #{candidate}"
+                end
+
+                marker = candidate/BASE_GENERATION_MARKER
+                contents = Overlay.read_owned_file(
+                  marker,
+                  description: "administrator base-generation marker",
+                  max_bytes:   65,
+                )
+                if contents.nil?
+                  raise TransactionFailure, "overlay reinstall replacement has no base-generation marker: #{candidate}"
+                end
+                generation = contents.chomp
+                Overlay.validate_base_generation!(generation)
+                unless contents == "#{generation}\\n"
+                  raise TransactionFailure, "invalid overlay reinstall base-generation marker: #{marker}"
+                end
+
+                Overlay.durable_atomic_write!(@metadata_base_generation, "#{generation}\\n", mode: 0600)
+                Overlay.durable_atomic_write!(@metadata_replacement_device, "#{replacement_stat.dev}\\n", mode: 0600)
+                Overlay.durable_atomic_write!(@metadata_replacement_inode, "#{replacement_stat.ino}\\n", mode: 0600)
+                Overlay.durable_atomic_write!(@metadata_state, "committed\\n", mode: 0600)
+                Overlay.fsync_directory!(@root)
+              end
+
+              sig { returns(T::Boolean) }
+              def committed_replacement?
+                state = Overlay.read_owned_file(
+                  @metadata_state,
+                  description: "overlay reinstall state",
+                  max_bytes:   32,
+                )
+                return false unless state == "committed\\n"
+
+                generation = Overlay.read_owned_file(
+                  @metadata_base_generation,
+                  description: "overlay reinstall committed base generation",
+                  max_bytes:   65,
+                )
+                device = Overlay.read_owned_file(
+                  @metadata_replacement_device,
+                  description: "overlay reinstall committed device",
+                  max_bytes:   32,
+                )
+                inode = Overlay.read_owned_file(
+                  @metadata_replacement_inode,
+                  description: "overlay reinstall committed inode",
+                  max_bytes:   32,
+                )
+                unless generation&.match?(/\\A[0-9a-f]{64}\\n\\z/) &&
+                       device&.match?(/\\A[0-9]+\\n\\z/) && inode&.match?(/\\A[0-9]+\\n\\z/)
+                  raise TransactionFailure, "incomplete committed overlay reinstall metadata: #{@root}"
+                end
+
+                recorded_generation = T.must(generation).chomp
+                Overlay.validate_base_generation!(recorded_generation)
+                unless Overlay.local_keg_realization?(formula_name, version)
+                  raise TransactionFailure, "committed overlay reinstall replacement is missing: #{@final_version}"
+                end
+                replacement_stat = @final_version.lstat
+                expected_identity = [T.must(device).to_i, T.must(inode).to_i]
+                actual_identity = [replacement_stat.dev, replacement_stat.ino]
+                unless actual_identity == expected_identity
+                  raise TransactionFailure, "committed overlay reinstall replacement changed: #{@final_version}"
+                end
+
+                marker = @final_version/BASE_GENERATION_MARKER
+                if marker.exist? || marker.symlink?
+                  contents = Overlay.read_owned_file(
+                    marker,
+                    description: "administrator base-generation marker",
+                    max_bytes:   65,
+                  )
+                  unless contents == "#{recorded_generation}\\n"
+                    raise TransactionFailure, "committed overlay reinstall marker changed: #{marker}"
+                  end
+                end
+                true
+              end
+''',
+              "authoritative reinstall commit record",
+          )
+          core = replace_once(
+              core,
+              '        validate_control_state!\n'
+              '        prepare_final_rack!\n',
+              '        state = validate_control_state!\n'
+              '        if state == "committed"\n'
+              '          raise TransactionFailure, "refusing to restore a committed overlay reinstall: #{@root}"\n'
+              '        end\n'
+              '        prepare_final_rack!\n',
+              "prevent committed rollback",
+          )
+          core = replace_once(
+              core,
+              '      sig { void }\n'
+              '      def validate_control_state!\n',
+              '      sig { returns(String) }\n'
+              '      def validate_control_state!\n',
+              "control state return type",
+          )
+          core = replace_once(
+              core,
+              '                         ["prepared\\n", "backed-up\\n"].include?(state)\n',
+              '                         ["prepared\\n", "backed-up\\n", "committed\\n"].include?(state)\n',
+              "control states",
+          )
+          core = replace_once(
+              core,
+              '        safe_backup = backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid\n'
+              '        raise TransactionFailure, "overlay reinstall backup is unavailable: #{backup_version}" unless safe_backup\n'
+              '      end\n\n'
+              '      sig { void }\n'
+              '      def prepare_final_rack!\n',
+              '        safe_backup = backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid\n'
+              '        raise TransactionFailure, "overlay reinstall backup is unavailable: #{backup_version}" unless safe_backup\n\n'
+              '        T.must(state).chomp\n'
+              '      end\n\n'
+              '      sig { void }\n'
+              '      def prepare_final_rack!\n',
+              "return control state",
+          )
+          old_cleanup = '''      sig { void }
+              def cleanup_control_root!
+                managed_root = @root.exist? || @root.symlink?
+                return unless managed_root
+
+                parent = @root.parent
+                safe_root = @root.directory? && !@root.symlink? && @root.stat.uid == Process.uid
+                raise TransactionFailure, "unsafe overlay reinstall control path: #{@root}" unless safe_root
+
+                FileUtils.rm_rf(@root)
+                if @root.exist? || @root.symlink?
+                  raise TransactionFailure, "could not remove overlay reinstall control path: #{@root}"
+                end
+
+                Overlay.fsync_directory!(parent)
+              end
+'''
+          new_cleanup = '''      sig { void }
+              def cleanup_control_root!
+                managed_root = @root.exist? || @root.symlink?
+                unless managed_root
+                  Overlay.unregister_reinstall_backup(self)
+                  return
+                end
+
+                root_stat = @root.lstat
+                safe_root = root_stat.directory? && !@root.symlink? && root_stat.uid == Process.uid
+                raise TransactionFailure, "unsafe overlay reinstall control path: #{@root}" unless safe_root
+
+                Overlay.remove_tree_durable!(
+                  @root,
+                  expected_device: root_stat.dev,
+                  expected_inode:  root_stat.ino,
+                )
+              ensure
+                Overlay.unregister_reinstall_backup(self) unless @root.exist? || @root.symlink?
+              end
+'''
+          core = replace_once(core, old_cleanup, new_cleanup, "reinstall tombstone cleanup")
+          core = replace_once(
+              core,
+              '      ensure\n'
+              '        release_owner_lock! if @finished\n'
+              '      end\n\n'
+              '      sig { void }\n'
+              '      def discard!\n',
+              '      ensure\n'
+              '        release_owner_lock! if @finished || (!@root.exist? && !@root.symlink?)\n'
+              '      end\n\n'
+              '      sig { void }\n'
+              '      def discard!\n',
+              "restore lock release after detach",
+          )
+          core = replace_once(
+              core,
+              '      ensure\n'
+              '        release_owner_lock! if @finished\n'
+              '      end\n\n'
+              '      private\n',
+              '      ensure\n'
+              '        release_owner_lock! if @finished || (!@root.exist? && !@root.symlink?)\n'
+              '      end\n\n'
+              '      private\n',
+              "discard lock release after detach",
+          )
+
+          registry_marker = '''    sig { params(formula_name: String, transaction: FormulaTransaction).void }
+          def self.unregister_transaction(formula_name, transaction)
+            @install_transactions.delete(formula_name) if @install_transactions[formula_name] == transaction
+          end
+
+'''
+          registry_methods = registry_marker + '''    sig { params(backup: ReinstallBackup).void }
+          def self.register_reinstall_backup(backup)
+            key = "#{backup.formula_name}\\0#{backup.version}"
+            existing = @reinstall_backups[key]
+            if existing && existing != backup
+              raise TransactionFailure, "another overlay reinstall backup is active for #{backup.formula_name}"
+            end
+            @reinstall_backups[key] = backup
+          end
+
+          sig { params(backup: ReinstallBackup).void }
+          def self.unregister_reinstall_backup(backup)
+            key = "#{backup.formula_name}\\0#{backup.version}"
+            @reinstall_backups.delete(key) if @reinstall_backups[key] == backup
+          end
+
+          sig { params(formula_name: String, version: String, keg_path: Pathname).void }
+          def self.mark_reinstall_committed!(formula_name, version, keg_path)
+            key = "#{formula_name}\\0#{version}"
+            backup = T.cast(@reinstall_backups[key], T.nilable(ReinstallBackup))
+            backup&.mark_committed!(keg_path)
+          end
+
+'''
+          core = replace_once(core, registry_marker, registry_methods, "reinstall registry methods")
+
+          durable_marker = '''    sig { params(path: T.any(Pathname, String)).returns(T::Boolean) }
+          def self.inherited_path?(path)
+'''
+          durable_helper = '''    sig {
+            params(
+              path: Pathname,
+              expected_device: T.nilable(Integer),
+              expected_inode: T.nilable(Integer),
+            ).void
+          }
+          def self.remove_tree_durable!(path, expected_device: nil, expected_inode: nil)
+            path = path.expand_path
+            return unless path.exist? || path.symlink?
+
+            parent = path.parent
+            parent_stat = parent.lstat
+            path_stat = path.lstat
+            expected_identity = if expected_device.nil? && expected_inode.nil?
+              true
+            elsif expected_device && expected_inode
+              path_stat.dev == expected_device && path_stat.ino == expected_inode
+            else
+              false
+            end
+            safe_path = parent_stat.directory? && !parent.symlink? && parent_stat.uid == Process.uid &&
+                        path_stat.directory? && !path.symlink? && path_stat.uid == Process.uid && expected_identity
+            raise TransactionFailure, "unsafe overlay cleanup path: #{path}" unless safe_path
+
+            tombstone = T.let(nil, T.nilable(Pathname))
+            32.times do
+              candidate = parent/".cleanup-#{path.basename}-#{SecureRandom.hex(8)}"
+              next if candidate.exist? || candidate.symlink?
+
+              begin
+                File.rename(path, candidate)
+              rescue Errno::EEXIST
+                next
+              end
+              tombstone = candidate
+              break
+            end
+            if tombstone.nil? || path.exist? || path.symlink?
+              raise TransactionFailure, "could not detach overlay cleanup path: #{path}"
+            end
+
+            fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)
+            detached_stat = tombstone.lstat
+            stable_detach = detached_stat.directory? && detached_stat.uid == path_stat.uid &&
+                            detached_stat.dev == path_stat.dev && detached_stat.ino == path_stat.ino
+            raise TransactionFailure, "overlay cleanup path changed while detaching: #{path}" unless stable_detach
+
+            FileUtils.rm_rf(tombstone)
+            if tombstone.exist? || tombstone.symlink?
+              raise TransactionFailure, "could not remove detached overlay cleanup path: #{tombstone}"
+            end
+            fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)
+          rescue TransactionFailure
+            raise
+          rescue SystemCallError, IOError => e
+            raise TransactionFailure, "could not durably remove overlay tree #{path}: #{e.message}"
+          end
+
+'''
+          core = replace_once(core, durable_marker, durable_helper + durable_marker, "durable cleanup helper")
+
+          core = replace_once(
+              core,
+              '''          FileUtils.rm_rf(probe)
+                  if probe.exist? || probe.symlink?
+                    raise TransactionFailure, "could not remove atomic overlay exchange probe: #{probe}"
+                  end
+
+                  fsync_directory!(parent)
+''',
+              '''          probe_stat = probe.lstat
+                  remove_tree_durable!(
+                    probe,
+                    expected_device: probe_stat.dev,
+                    expected_inode:  probe_stat.ino,
+                  )
+''',
+              "probe tombstone cleanup",
+          )
+          core = replace_once(
+              core,
+              '''      remove_links_to!(keg)
+              FileUtils.rm_rf(keg)
+              raise TransactionFailure, "could not discard failed local keg: #{keg}" if keg.exist? || keg.symlink?
+
+              rack.rmdir_if_possible
+''',
+              '''      remove_links_to!(keg)
+              keg_stat = keg.lstat
+              remove_tree_durable!(keg, expected_device: keg_stat.dev, expected_inode: keg_stat.ino)
+
+              rack.rmdir_if_possible
+''',
+              "discard keg tombstone cleanup",
+          )
+          core = replace_once(
+              core,
+              '''          Overlay.remove_links_to!(@final_version)
+                  FileUtils.rm_rf(@final_version)
+                  if @final_version.exist? || @final_version.symlink?
+                    raise TransactionFailure, "could not remove failed overlay reinstall target: #{@final_version}"
+                  end
+''',
+              '''          Overlay.remove_links_to!(@final_version)
+                  final_stat = @final_version.lstat
+                  Overlay.remove_tree_durable!(
+                    @final_version,
+                    expected_device: final_stat.dev,
+                    expected_inode:  final_stat.ino,
+                  )
+''',
+              "failed replacement tombstone cleanup",
+          )
+          core = replace_once(
+              core,
+              '''      return path.resolved_path unless inherited_prefix_link?(path)
+
+              path.realpath
+''',
+              '''      return path.resolved_path unless inherited_prefix_link?(path)
+
+              resolved = path.realpath
+              cellar = canonical_path(base_cellar)
+              return unless path_under?(resolved, cellar)
+
+              components = resolved.relative_path_from(cellar).each_filename.to_a
+              return unless components.length.between?(1, 2)
+              return unless valid_formula_name?(T.must(components.first))
+              return if components.length == 2 && !valid_version_name?(T.must(components.last))
+
+              resolved
+''',
+              "managed link containment",
+          )
+          core_path.write_text(core, encoding="utf-8")
+
+          install_session_path = Path("Library/Homebrew/overlay/install_session.rb")
+          install_session = install_session_path.read_text(encoding="utf-8")
+          install_session = replace_once(
+              install_session,
+              '''          @mutation_owned = false
+                end
+              end
+
+              sig { void }
+              def complete_native_install!
+''',
+              '''          @mutation_owned = false
+                end
+                Overlay.mark_reinstall_committed!(formula_name, formula_version, keg.to_path)
+              end
+
+              sig { void }
+              def complete_native_install!
+''',
+              "reinstall commit notification",
+          )
+          install_session_path.write_text(install_session, encoding="utf-8")
+
+          shell_path = Path("Library/Homebrew/utils/overlay/core.sh")
+          shell = shell_path.read_text(encoding="utf-8")
+          shell = replace_once(
+              shell,
+              '''homebrew-overlay-remove-tree-durable() {
+              local path="$1"
+              local parent="${path%/*}"
+
+              [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+              rm -rf --one-file-system -- "${path}" || return 1
+              [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
+              homebrew-overlay-fsync-directory "${parent}"
+            }
+''',
+              '''homebrew-overlay-delete-detached-tree-durable() {
+              local path="$1"
+              local parent="${path%/*}"
+
+              [[ ! -e "${path}" && ! -L "${path}" ]] && return 0
+              [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+              [[ -d "${path}" && ! -L "${path}" && -O "${path}" ]] || return 1
+              rm -rf --one-file-system -- "${path}" || return 1
+              [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
+              homebrew-overlay-fsync-directory "${parent}"
+            }
+
+            homebrew-overlay-cleanup-tombstones() {
+              local parent="$1"
+              local tombstone name
+
+              [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+              for tombstone in "${parent}"/.cleanup-*
+              do
+                [[ -e "${tombstone}" || -L "${tombstone}" ]] || continue
+                name="${tombstone##*/}"
+                [[ "${name}" =~ ^\\.cleanup-[A-Za-z0-9._-]+-[0-9a-f]{16}$ ]] || {
+                  echo "Error: invalid overlay cleanup tombstone: ${tombstone}" >&2
+                  return 1
+                }
+                [[ -d "${tombstone}" && ! -L "${tombstone}" && -O "${tombstone}" ]] || {
+                  echo "Error: unsafe overlay cleanup tombstone: ${tombstone}" >&2
+                  return 1
+                }
+                homebrew-overlay-delete-detached-tree-durable "${tombstone}" || return 1
+              done
+            }
+
+            homebrew-overlay-remove-tree-durable() {
+              local path="$1"
+              local parent="${path%/*}"
+              local name="${path##*/}"
+              local identity detached_identity nonce tombstone=""
+              local attempt
+
+              [[ ! -e "${path}" && ! -L "${path}" ]] && return 0
+              [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+              [[ -d "${path}" && ! -L "${path}" && -O "${path}" ]] || return 1
+              identity="$(stat -Lc '%d:%i' -- "${path}")" || return 1
+              for attempt in {1..32}
+              do
+                nonce="$(printf '%s\\0' "$$" "${RANDOM}" "${attempt}" "$(date +%s%N)" | sha256sum | cut -c1-16)" || return 1
+                tombstone="${parent}/.cleanup-${name}-${nonce}"
+                if mv -nT -- "${path}" "${tombstone}" && [[ ! -e "${path}" && ! -L "${path}" ]]
+                then
+                  break
+                fi
+                tombstone=""
+              done
+              [[ -n "${tombstone}" ]] || return 1
+              homebrew-overlay-fsync-directory "${parent}" || return 1
+              detached_identity="$(stat -Lc '%d:%i' -- "${tombstone}")" || return 1
+              [[ "${detached_identity}" == "${identity}" ]] || {
+                echo "Error: overlay cleanup path changed while detaching: ${path}" >&2
+                return 1
+              }
+              homebrew-overlay-delete-detached-tree-durable "${tombstone}"
+            }
+''',
+              "shell tombstone cleanup",
+          )
+          shell = replace_once(
+              shell,
+              '  local owner_lock owner_lock_fd lock_dir\n',
+              '  local owner_lock owner_lock_fd lock_dir cleanup_parent\n',
+              "formula cleanup parent declaration",
+          )
+          shell = replace_once(
+              shell,
+              '''  homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+
+              # FormulaTransaction publishes journals by renaming a complete hidden
+''',
+              '''  homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+              for cleanup_parent in "${transactions}" "${staging_parent}" "${replacement_parent}" "${failed_parent}"
+              do
+                homebrew-overlay-cleanup-tombstones "${cleanup_parent}" || return 1
+              done
+
+              # FormulaTransaction publishes journals by renaming a complete hidden
+''',
+              "formula tombstone recovery",
+          )
+          shell = replace_once(
+              shell,
+              '''  local local_rack final_version base_rack base_version marker generation target
+              local backup_present=0 metadata_complete=0 committed=0
+''',
+              '''  local local_rack final_version base_rack base_version marker generation target
+              local committed_generation committed_device committed_inode current_identity expected_identity
+              local backup_present=0 metadata_complete=0 committed=0
+''',
+              "reinstall committed metadata declarations",
+          )
+          shell = replace_once(
+              shell,
+              '''  homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+              roots=("${failed_parent}"/reinstall-*)
+''',
+              '''  homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+              homebrew-overlay-cleanup-tombstones "${failed_parent}" || return 1
+              roots=("${failed_parent}"/reinstall-*)
+''',
+              "reinstall tombstone recovery",
+          )
+          shell = replace_once(
+              shell,
+              '''      [[ "${state}" == prepared || "${state}" == backed-up ]] || {
+                echo "Error: invalid overlay reinstall state '${state}': ${root}" >&2
+                exec {owner_fd}>&-
+                return 1
+              }
+              metadata_complete=1
+''',
+              '''      [[ "${state}" == prepared || "${state}" == backed-up || "${state}" == committed ]] || {
+                echo "Error: invalid overlay reinstall state '${state}': ${root}" >&2
+                exec {owner_fd}>&-
+                return 1
+              }
+              if [[ "${state}" == committed ]]
+              then
+                [[ -f "${root}/committed_base_generation" && ! -L "${root}/committed_base_generation" &&
+                   -f "${root}/committed_device" && ! -L "${root}/committed_device" &&
+                   -f "${root}/committed_inode" && ! -L "${root}/committed_inode" ]] || {
+                  echo "Error: incomplete committed overlay reinstall metadata: ${root}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                committed_generation="$(homebrew-overlay-read-owned-line "${root}/committed_base_generation")" || {
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                committed_device="$(homebrew-overlay-read-owned-line "${root}/committed_device")" || {
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                committed_inode="$(homebrew-overlay-read-owned-line "${root}/committed_inode")" || {
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                homebrew-overlay-base-generation-valid "${committed_generation}" || return 1
+                [[ "${committed_device}" =~ ^[0-9]+$ && "${committed_inode}" =~ ^[0-9]+$ ]] || {
+                  echo "Error: invalid committed overlay reinstall identity: ${root}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+              fi
+              metadata_complete=1
+''',
+              "reinstall committed metadata parsing",
+          )
+          old_reinstall_decision = '''    backup_present=0
+            if [[ "${metadata_complete}" -eq 1 ]]
+            then
+              backup_rack="${root}/backup/${formula}"
+              backup_version="${backup_rack}/${version}"
+              [[ -d "${backup_version}" && ! -L "${backup_version}" && -O "${backup_version}" ]] && backup_present=1
+            elif [[ -e "${root}/backup" || -L "${root}/backup" ]]
+            then
+              echo "Error: overlay reinstall backup has incomplete metadata: ${root}" >&2
+              exec {owner_fd}>&-
+              return 1
+            fi
+
+            if [[ "${backup_present}" -eq 0 ]]
+            then
+              if [[ "${metadata_complete}" -eq 0 || "${state}" == prepared ]]
+              then
+                homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                homebrew-overlay-remove-tree-durable "${root}" || return 1
+                exec {owner_fd}>&-
+                HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+                continue
+              fi
+              echo "Error: overlay reinstall backup is missing: ${root}" >&2
+              exec {owner_fd}>&-
+              return 1
+            fi
+
+            local_rack="${prefix}/Cellar/${formula}"
+            final_version="${local_rack}/${version}"
+            base_rack="${base_prefix}/Cellar/${formula}"
+            base_version="${base_rack}/${version}"
+            committed=0
+            if [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]]
+            then
+              marker="${final_version}/.brew-overlay-base-generation"
+              if [[ -f "${marker}" && ! -L "${marker}" ]]
+              then
+                generation="$(homebrew-overlay-read-line "${marker}" "${EUID}" 65)" || {
+                  echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                homebrew-overlay-base-generation-valid "${generation}" || {
+                  echo "Error: invalid committed overlay reinstall marker: ${marker}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                committed=1
+              fi
+            fi
+
+            if [[ "${committed}" -eq 1 ]]
+            then
+              homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+                exec {owner_fd}>&-
+                return 1
+              }
+              homebrew-overlay-remove-tree-durable "${root}" || return 1
+              exec {owner_fd}>&-
+              HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+              continue
+            fi
+'''
+          new_reinstall_decision = '''    backup_present=0
+            if [[ "${metadata_complete}" -eq 1 ]]
+            then
+              backup_rack="${root}/backup/${formula}"
+              backup_version="${backup_rack}/${version}"
+              [[ -d "${backup_version}" && ! -L "${backup_version}" && -O "${backup_version}" ]] && backup_present=1
+            elif [[ -e "${root}/backup" || -L "${root}/backup" ]]
+            then
+              echo "Error: overlay reinstall backup has incomplete metadata: ${root}" >&2
+              exec {owner_fd}>&-
+              return 1
+            fi
+
+            local_rack="${prefix}/Cellar/${formula}"
+            final_version="${local_rack}/${version}"
+            base_rack="${base_prefix}/Cellar/${formula}"
+            base_version="${base_rack}/${version}"
+            committed=0
+            if [[ "${state}" == committed ]]
+            then
+              [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]] || {
+                echo "Error: committed overlay reinstall replacement is missing: ${final_version}" >&2
+                exec {owner_fd}>&-
+                return 1
+              }
+              current_identity="$(stat -Lc '%d:%i' -- "${final_version}")" || {
+                exec {owner_fd}>&-
+                return 1
+              }
+              expected_identity="${committed_device}:${committed_inode}"
+              [[ "${current_identity}" == "${expected_identity}" ]] || {
+                echo "Error: committed overlay reinstall replacement changed: ${final_version}" >&2
+                exec {owner_fd}>&-
+                return 1
+              }
+              marker="${final_version}/.brew-overlay-base-generation"
+              if [[ -e "${marker}" || -L "${marker}" ]]
+              then
+                [[ -f "${marker}" && ! -L "${marker}" ]] || {
+                  echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                generation="$(homebrew-overlay-read-line "${marker}" "${EUID}" 65)" || {
+                  echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                [[ "${generation}" == "${committed_generation}" ]] || {
+                  echo "Error: committed overlay reinstall marker changed: ${marker}" >&2
+                  exec {owner_fd}>&-
+                  return 1
+                }
+              fi
+              committed=1
+            fi
+
+            if [[ "${committed}" -eq 1 ]]
+            then
+              homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+                exec {owner_fd}>&-
+                return 1
+              }
+              homebrew-overlay-remove-tree-durable "${root}" || return 1
+              exec {owner_fd}>&-
+              HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+              continue
+            fi
+
+            if [[ "${backup_present}" -eq 0 ]]
+            then
+              if [[ "${metadata_complete}" -eq 0 || "${state}" == prepared ]]
+              then
+                homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+                  exec {owner_fd}>&-
+                  return 1
+                }
+                homebrew-overlay-remove-tree-durable "${root}" || return 1
+                exec {owner_fd}>&-
+                HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+                continue
+              fi
+              echo "Error: overlay reinstall backup is missing: ${root}" >&2
+              exec {owner_fd}>&-
+              return 1
+            fi
+'''
+          shell = replace_once(shell, old_reinstall_decision, new_reinstall_decision, "reinstall recovery authority")
+          shell_path.write_text(shell, encoding="utf-8")
+
+          workflow_test = dedent(r'''\
+          #!/bin/bash
+          # Static guard for fresh-runner, exact-SHA overlay branch promotion.
+          set -euo pipefail
+
+          repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
+          repo="$(cd "${repo}" && pwd -P)"
+
+          python3 - \
+            "${repo}/.github/workflows/rebase-upstream-overlay.yml" \
+            "${repo}/.github/workflows/overlay-validation.yml" <<'PY'
+          from pathlib import Path
+          import sys
+
+          rebase = Path(sys.argv[1]).read_text(encoding="utf-8")
+          validation = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+          for job in ("  prepare:\n", "  validate:\n", "  promote:\n"):
+              if job not in rebase:
+                  raise SystemExit(f"overlay promotion workflow is missing {job.strip()}")
+          prepare_start = rebase.index("  prepare:\n")
+          validate_start = rebase.index("  validate:\n")
+          promote_start = rebase.index("  promote:\n")
+          if not prepare_start < validate_start < promote_start:
+              raise SystemExit("overlay promotion jobs are not ordered prepare, validate, promote")
+
+          prepare = rebase[prepare_start:validate_start]
+          validate = rebase[validate_start:promote_start]
+          promote = rebase[promote_start:]
+          required_prepare = [
+              "if: github.repository == 'wangzheng15534-blip/brew'",
+              "permissions:\n      contents: write",
+              "persist-credentials: false",
+              "git -c core.hooksPath=/dev/null rebase upstream/main",
+              "automation/overlay-rebase-candidate",
+              "PREPARE_TOKEN: ${{ github.token }}",
+          ]
+          required_validate = [
+              "needs: prepare",
+              "permissions:\n      contents: read",
+              "ref: ${{ needs.prepare.outputs.after }}",
+              "persist-credentials: false",
+              "overlay_final_review_reproducer.sh",
+              "bin/brew tests --no-parallel",
+              "overlay_style_delta_check.py upstream/main HEAD",
+              "bin/brew typecheck",
+              "Attest the exact validated commit and tree",
+          ]
+          required_promote = [
+              "needs: [prepare, validate]",
+              "environment: overlay-promotion",
+              "permissions: {}",
+              "OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}",
+              "GIT_CONFIG_NOSYSTEM=1",
+              "GIT_CONFIG_GLOBAL=/dev/null",
+              "core.hooksPath /dev/null",
+              "refs/remotes/origin/candidate",
+              "--force-with-lease=refs/heads/overlay-store:${BEFORE}",
+              "${AFTER}:refs/heads/overlay-store",
+          ]
+          for section, required in (
+              (prepare, required_prepare),
+              (validate, required_validate),
+              (promote, required_promote),
+          ):
+              missing = [fragment for fragment in required if fragment not in section]
+              if missing:
+                  raise SystemExit(f"overlay promotion gate is incomplete: {missing}")
+          if "OVERLAY_PROMOTION_TOKEN" in rebase[:promote_start]:
+              raise SystemExit("promotion credential is exposed before the fresh promotion runner")
+          if "actions/checkout" in promote:
+              raise SystemExit("promotion job must not check out or execute candidate files")
+          if "uses: actions/checkout@v" in rebase or "uses: actions/checkout@v" in validation:
+              raise SystemExit("overlay workflows must pin actions/checkout by immutable commit SHA")
+          if "pull_request:" not in validation or "      - overlay-store" not in validation:
+              raise SystemExit("overlay validation is not enabled for overlay-store pull requests")
+          if "    paths:" in validation or "    paths-ignore:" in validation:
+              raise SystemExit("security-sensitive overlay PR validation must not be path-filtered")
+          if "persist-credentials: false" not in validation:
+              raise SystemExit("overlay validation checkout persists credentials")
+          PY
+
+          printf 'overlay rebase workflow test: PASS\n'
+          ''')
+          Path("Library/Homebrew/test/support/overlay_rebase_workflow_test.sh").write_text(
+              workflow_test,
+              encoding="utf-8",
+          )
+
+          reinstall_test_path = Path("Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh")
+          reinstall_test = reinstall_test_path.read_text(encoding="utf-8")
+          old_marker_case = '''# A replacement carrying a valid durable base-generation marker wins; the old
+          # backup is discarded instead of being restored beneath later side effects.
+          rm -rf -- "${prefix}/Cellar/foo/2.0"
+          committed="$(make_control reinstall-102-3333333333333333 backed-up)"
+          mkdir -p "${committed}/backup/foo/2.0/bin" "${prefix}/Cellar/foo/2.0/bin"
+          printf 'old\\n' >"${committed}/backup/foo/2.0/bin/foo"
+          printf 'new\\n' >"${prefix}/Cellar/foo/2.0/bin/foo"
+          printf '%064d\\n' 0 >"${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          chmod 0600 "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+          grep -qx new "${prefix}/Cellar/foo/2.0/bin/foo"
+          test ! -e "${committed}"
+'''
+          new_marker_case = '''# A package-local generation marker is descriptive, not commit authority. A
+          # stale marker in a replacement whose journal is still backed-up must
+          # not discard the known-good private keg.
+          rm -rf -- "${prefix}/Cellar/foo/2.0"
+          stale="$(make_control reinstall-102-3333333333333333 backed-up)"
+          mkdir -p "${stale}/backup/foo/2.0/bin" "${prefix}/Cellar/foo/2.0/bin"
+          printf 'old\\n' >"${stale}/backup/foo/2.0/bin/foo"
+          printf 'new\\n' >"${prefix}/Cellar/foo/2.0/bin/foo"
+          printf '%064d\\n' 0 >"${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          chmod 0600 "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+          grep -qx old "${prefix}/Cellar/foo/2.0/bin/foo"
+          test ! -e "${stale}"
+
+          # Once the owner-locked control journal records the exact replacement
+          # identity, later package code may remove the descriptive generation
+          # marker without converting a post-commit failure into rollback.
+          rm -rf -- "${prefix}/Cellar/foo/2.0"
+          committed="$(make_control reinstall-104-5555555555555555 committed)"
+          mkdir -p "${committed}/backup/foo/2.0/bin" "${prefix}/Cellar/foo/2.0/bin"
+          printf 'old\\n' >"${committed}/backup/foo/2.0/bin/foo"
+          printf 'new\\n' >"${prefix}/Cellar/foo/2.0/bin/foo"
+          printf '%064d\\n' 0 >"${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          chmod 0600 "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          printf '%064d\\n' 0 >"${committed}/committed_base_generation"
+          stat -Lc '%d' -- "${prefix}/Cellar/foo/2.0" >"${committed}/committed_device"
+          stat -Lc '%i' -- "${prefix}/Cellar/foo/2.0" >"${committed}/committed_inode"
+          chmod 0600 "${committed}/committed_base_generation" \
+            "${committed}/committed_device" "${committed}/committed_inode"
+          rm -f -- "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+          homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+          grep -qx new "${prefix}/Cellar/foo/2.0/bin/foo"
+          test ! -e "${committed}"
+
+          # Detached cleanup tombstones are deletion-only; partially removed
+          # contents are never reinterpreted as an active reinstall journal.
+          tombstone="${prefix}/Cellar/.homebrew-overlay-failed/.cleanup-reinstall-999-6666666666666666-7777777777777777"
+          mkdir -p "${tombstone}/partial"
+          homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+          test ! -e "${tombstone}"
+'''
+          reinstall_test = replace_once(
+              reinstall_test,
+              old_marker_case,
+              new_marker_case,
+              "reinstall shell authority test",
+          )
+          reinstall_test = replace_once(
+              reinstall_test,
+              'assert "committed_replacement?" in session\n',
+              'assert "committed_replacement?" in session\n'
+              'assert "mark_reinstall_committed!" in overlay\n'
+              'assert "committed_base_generation" in overlay\n'
+              'assert ".cleanup-#{path.basename}" in overlay\n',
+              "reinstall static assertions",
+          )
+          reinstall_test_path.write_text(reinstall_test, encoding="utf-8")
+
+          transaction_test_path = Path("Library/Homebrew/test/support/overlay_transaction_recovery_test.sh")
+          transaction_test = transaction_test_path.read_text(encoding="utf-8")
+          tombstone_case = '''
+          # Cleanup first detaches active control roots. A later process treats
+          # partially deleted tombstones as deletion-only objects and resumes
+          # cleanup without parsing their contents.
+          tombstone_case="${work}/cleanup-tombstones"
+          make_case "${tombstone_case}"
+          mkdir -p \
+            "${tombstone_case}/user/var/homebrew/overlay/transactions/.cleanup-transaction-dead-1111111111111111/partial" \
+            "${tombstone_case}/user/Cellar/.homebrew-overlay-staging/.cleanup-staging-dead-2222222222222222/partial" \
+            "${tombstone_case}/user/Cellar/.homebrew-overlay-racks/.cleanup-racks-dead-3333333333333333/partial" \
+            "${tombstone_case}/user/Cellar/.homebrew-overlay-failed/.cleanup-failed-dead-4444444444444444/partial"
+          activate "${tombstone_case}"
+          homebrew-overlay-sync --force
+          test -z "$(find "${tombstone_case}/user" -name '.cleanup-*' -print -quit)"
+
+'''
+          insertion = '# A process may die after acquiring its owner lock but before creating even a\n'
+          transaction_test = replace_once(
+              transaction_test,
+              insertion,
+              tombstone_case + insertion,
+              "transaction tombstone test",
+          )
+          transaction_test_path.write_text(transaction_test, encoding="utf-8")
+
+          core_spec_path = Path("Library/Homebrew/test/overlay/core_spec.rb")
+          core_spec = core_spec_path.read_text(encoding="utf-8")
+          link_test = '''
+            it "rejects an overlay-managed record whose final target escapes the base Cellar" do
+              outside = root/"outside/foo/1.0"
+              outside.mkpath
+              base_opt = base_prefix/"opt/foo"
+              user_opt = prefix/"opt/foo"
+              base_opt.dirname.mkpath
+              user_opt.dirname.mkpath
+              FileUtils.ln_s(outside, base_opt)
+              FileUtils.ln_s(base_opt, user_opt)
+              state_file = prefix/"var/homebrew/overlay/view.state"
+              state_file.dirname.mkpath
+              state_file.binwrite("opt/foo\\0#{base_opt}\\0")
+              state_file.chmod 0600
+              described_class.clear_caches!
+
+              expect(described_class.keg_record_target(user_opt)).to be_nil
+            end
+
+'''
+          next_test = '  it "does not fully resolve an unmanaged user keg record" do\n'
+          core_spec = replace_once(core_spec, next_test, link_test + next_test, "managed link containment spec")
+          core_spec_path.write_text(core_spec, encoding="utf-8")
+
+          reinstall_backup_spec = dedent('''\
+          # typed: true
+          # frozen_string_literal: true
+
+          require "overlay"
+
+          RSpec.describe Homebrew::Overlay::ReinstallBackup do
+            let(:root) { mktmpdir }
+            let(:prefix) { root/"user" }
+            let(:cellar) { prefix/"Cellar" }
+            let(:base_prefix) { root/"base" }
+            let(:base_generation) { "a" * 64 }
+            let(:keg_path) { cellar/"foo/2.0" }
+
+            before do
+              (keg_path/"bin").mkpath
+              (keg_path/"bin/foo").write("old\\n")
+              (base_prefix/"Cellar").mkpath
+              stub_const("HOMEBREW_PREFIX", prefix)
+              stub_const("HOMEBREW_CELLAR", cellar)
+              allow(Homebrew::EnvConfig).to receive_messages(
+                overlay?:            true,
+                overlay_active?:     true,
+                overlay_base_prefix: base_prefix.to_s,
+              )
+              allow(Homebrew::Overlay).to receive_messages(
+                mutation_active?: true,
+                sync!:            nil,
+              )
+              Homebrew::Overlay.clear_caches!
+            end
+
+            def install_replacement
+              (keg_path/"bin").mkpath
+              (keg_path/"bin/foo").write("new\\n")
+              Homebrew::Overlay.record_base_generation!(keg_path, base_generation)
+            end
+
+            it "does not treat a package-local generation marker as commit authority" do
+              backup = described_class.new(keg_path).start!
+              install_replacement
+
+              expect(backup.committed_replacement?).to be(false)
+              backup.restore!
+              expect((keg_path/"bin/foo").read).to eq("old\\n")
+            end
+
+            it "keeps the exact journal-committed replacement after its descriptive marker is removed" do
+              backup = described_class.new(keg_path).start!
+              install_replacement
+
+              Homebrew::Overlay.mark_reinstall_committed!("foo", "2.0", keg_path)
+              control = cellar/".homebrew-overlay-failed"/backup.id
+              expect((control/"state").read).to eq("committed\\n")
+              (keg_path/Homebrew::Overlay::BASE_GENERATION_MARKER).unlink
+
+              expect(backup.committed_replacement?).to be(true)
+              backup.discard!
+              expect(control).not_to exist
+            end
+
+            it "refuses rollback when the journal-committed replacement identity changes" do
+              backup = described_class.new(keg_path).start!
+              install_replacement
+              Homebrew::Overlay.mark_reinstall_committed!("foo", "2.0", keg_path)
+              original = cellar/"foo/2.0-original"
+              keg_path.rename(original)
+              install_replacement
+
+              expect do
+                backup.committed_replacement?
+              end.to raise_error(Homebrew::Overlay::TransactionFailure, /replacement changed/)
+            ensure
+              FileUtils.rm_rf(keg_path)
+              original&.rename(keg_path) if original&.exist?
+              backup&.discard!
+            end
+          end
+          ''')
+          Path("Library/Homebrew/test/overlay/reinstall_backup_spec.rb").write_text(
+              reinstall_backup_spec,
+              encoding="utf-8",
+          )
+
+          paths = [
+              ".github/workflows/overlay-validation.yml",
+              ".github/workflows/rebase-upstream-overlay.yml",
+              "Library/Homebrew/overlay/core.rb",
+              "Library/Homebrew/overlay/install_session.rb",
+              "Library/Homebrew/test/overlay/core_spec.rb",
+              "Library/Homebrew/test/overlay/reinstall_backup_spec.rb",
+              "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+              "Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh",
+              "Library/Homebrew/test/support/overlay_transaction_recovery_test.sh",
+              "Library/Homebrew/utils/overlay/core.sh",
+              "docs/Overlay-Promotion-Credentials.md",
+          ]
+          Path("/tmp/overlay-review-followup-paths").write_text("\n".join(paths) + "\n", encoding="utf-8")
+          PY
+
+          chmod +x \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+
+          mapfile -t paths </tmp/overlay-review-followup-paths
+          index_file="$(mktemp)"
+          rm -f "${index_file}"
+          GIT_INDEX_FILE="${index_file}" git read-tree "${BASE_SHA}"
+          GIT_INDEX_FILE="${index_file}" git add -- "${paths[@]}"
+          clean_tree="$(GIT_INDEX_FILE="${index_file}" git write-tree)"
+          rm -f "${index_file}"
+
+          export GIT_AUTHOR_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          clean_commit="$(printf '%s\n' 'Harden overlay promotion and recovery boundaries' | \
+            git commit-tree "${clean_tree}" -p "${BASE_SHA}")"
+
+          git checkout --detach --force "${clean_commit}"
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" -eq 1
+          test -z "$(git rev-list --merges "${BASE_SHA}..HEAD")"
+          git diff --check "${BASE_SHA}...HEAD"
+          bash -n \
+            Library/Homebrew/utils/overlay.sh \
+            Library/Homebrew/utils/overlay/core.sh \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_transaction_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${BASE_SHA}" HEAD
+          bin/brew typecheck
+          bin/brew tests --no-parallel \
+            --only=overlay/core,overlay/install_session,overlay/reinstall_session,overlay/reinstall_backup,formula_installer
+
+          git push --force origin "${clean_commit}:refs/heads/${CANDIDATE_BRANCH}"
+          printf 'clean_candidate=%s\n' "${clean_commit}"
