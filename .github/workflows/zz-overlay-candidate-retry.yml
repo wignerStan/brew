@@ -40,12 +40,24 @@ jobs:
               line[10:] if line.startswith("          ") else line
               for line in lines
           ) + "\n"
-          old = 'git checkout --detach "${clean_commit}"'
-          new = 'git checkout --detach --force "${clean_commit}"'
-          if script.count(old) != 1:
-              raise SystemExit(f"expected one clean checkout command, found {script.count(old)}")
+
+          replacements = {
+              'git checkout --detach "${clean_commit}"':
+                  'git checkout --detach --force "${clean_commit}"',
+              'expect(session).to be_managed':
+                  'expect(session.managed?).to be(true)',
+              'expect(session).not_to be_managed':
+                  'expect(session.managed?).to be(false)',
+          }
+          for old, new in replacements.items():
+              if script.count(old) != 1:
+                  raise SystemExit(
+                      f"expected one generator fragment {old!r}, found {script.count(old)}"
+                  )
+              script = script.replace(old, new)
+
           Path("/tmp/generate-clean-overlay-candidate.sh").write_text(
-              script.replace(old, new),
+              script,
               encoding="utf-8",
           )
           PY
