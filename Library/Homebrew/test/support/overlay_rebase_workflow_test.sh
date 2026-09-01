@@ -44,8 +44,16 @@ if "token: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}" in rebase:
     raise SystemExit("the workflow-capable token must not persist while candidate code is under test")
 if "uses: actions/checkout@v" in rebase or "uses: actions/checkout@v" in validation:
     raise SystemExit("overlay workflows must pin actions/checkout by immutable commit SHA")
-if "pull_request:" not in validation or "fix/overlay-review-hardening" not in validation:
-    raise SystemExit("overlay validation is not enabled for both review and branch pushes")
+validation_triggers = [
+    "pull_request:",
+    "      - overlay-store",
+    "push:",
+    "      - 'fix/overlay-*'",
+    "      - 'refactor/overlay-*'",
+]
+missing_triggers = [fragment for fragment in validation_triggers if fragment not in validation]
+if missing_triggers:
+    raise SystemExit(f"overlay validation branch coverage is incomplete: {missing_triggers}")
 if "github.event.pull_request.head.sha || github.sha" not in validation:
     raise SystemExit("overlay validation is not checking out the exact candidate SHA")
 PY
