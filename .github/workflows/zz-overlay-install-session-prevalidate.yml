@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'Prevalidate overlay install session refactor retry'
+    if: github.event.head_commit.message == 'Prevalidate overlay install session final'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -28,6 +28,18 @@ jobs:
           from pathlib import Path
           from textwrap import dedent, indent
 
+          def replace_method_rescue(source, method_marker, next_marker, comment):
+              start = source.index(method_marker)
+              end = source.index(next_marker, start)
+              method = source[start:end]
+              rescue = "  rescue Exception # rubocop:disable Lint/RescueException\n"
+              if method.count(rescue) != 1:
+                  raise SystemExit(
+                      f"expected one broad rescue between {method_marker!r} and {next_marker!r}"
+                  )
+              method = method.replace(rescue, f"  # {comment}\n{rescue}")
+              return source[:start] + method + source[end:]
+
           session_path = Path("Library/Homebrew/overlay/install_session.rb")
           session = session_path.read_text(encoding="utf-8")
           method = session.index("      def raise_transaction_failure!\n")
@@ -42,8 +54,24 @@ jobs:
           '''
           session_path.write_text(session[:start] + new_error + session[end:], encoding="utf-8")
 
-          spec_path = Path("Library/Homebrew/test/formula_installer_spec.rb")
-          spec = spec_path.read_text(encoding="utf-8")
+          installer_path = Path("Library/Homebrew/formula_installer.rb")
+          installer = installer_path.read_text(encoding="utf-8")
+          installer = replace_method_rescue(
+              installer,
+              "  def install\n",
+              "  sig { void }\n  def check_conflicts\n",
+              "Overlay rollback must also cover interrupts and process exits during installation.",
+          )
+          installer = replace_method_rescue(
+              installer,
+              "  def finish\n",
+              "  sig { returns(String) }\n  def summary\n",
+              "Overlay rollback must also cover interrupts and process exits during finalization.",
+          )
+          installer_path.write_text(installer, encoding="utf-8")
+
+          formula_spec = Path("Library/Homebrew/test/formula_installer_spec.rb")
+          spec = formula_spec.read_text(encoding="utf-8")
           describe_marker = '  describe "#finish" do\n'
           next_test_marker = '    it "runs structured post-install work through the post-install subprocess" do\n'
           start = spec.index(describe_marker) + len(describe_marker)
@@ -103,26 +131,61 @@ jobs:
               ),
               "    ",
           )
-          spec_path.write_text(spec[:start] + replacement + spec[end:], encoding="utf-8")
+          formula_spec.write_text(spec[:start] + replacement + spec[end:], encoding="utf-8")
+
+          session_spec_path = Path("Library/Homebrew/test/overlay/install_session_spec.rb")
+          session_spec = session_spec_path.read_text(encoding="utf-8")
+          start_marker = '  it "closes the failure scope and lease after rollback errors" do\n'
+          end_marker = '  it "finishes a writable administrator mutation after native install work" do\n'
+          start = session_spec.index(start_marker)
+          end = session_spec.index(end_marker, start)
+          replacement = dedent(
+              '''\
+                it "closes the failure scope and lease after rollback errors" do
+                  lease = instance_double(File)
+                  transaction = instance_double(
+                    Homebrew::Overlay::FormulaTransaction,
+                    finished?: false,
+                  )
+                  allow(Homebrew::Overlay).to receive_messages(
+                    active?:                     true,
+                    acquire_base_mutation_lease: lease,
+                    begin_formula_transaction:   transaction,
+                    current_base_generation:     generation,
+                    mutation_active?:            true,
+                  )
+                  allow(Homebrew).to receive(:failed?).and_return(true, false)
+                  expect(Homebrew).to receive(:failed=).with(false).ordered
+                  expect(transaction).to receive(:rollback!).ordered.and_raise(
+                    Homebrew::Overlay::TransactionFailure,
+                    "rollback failed",
+                  )
+                  expect(Homebrew).to receive(:failed=).with(true).ordered
+                  expect(Homebrew::Overlay).to receive(:release_base_mutation_lease).with(lease).ordered
+
+                  session = described_class.new
+                  session.start!(formula)
+
+                  expect do
+                    session.abort!
+                  ensure
+                    session.close!
+                  end.to raise_error(Homebrew::Overlay::TransactionFailure, "rollback failed")
+                end
+
+              '''
+          )
+          session_spec_path.write_text(
+              session_spec[:start] + replacement + session_spec[end:],
+              encoding="utf-8",
+          )
           PY
 
+          # Both files are new in this slice, so whole-file correction cannot
+          # rewrite pre-existing Homebrew code.
           bin/brew style --fix \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/overlay.rb \
             Library/Homebrew/overlay/install_session.rb \
-            Library/Homebrew/test/formula_installer_spec.rb \
             Library/Homebrew/test/overlay/install_session_spec.rb
-
-          git diff --check
-          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
-          bin/brew style \
-            Library/Homebrew/formula_installer.rb \
-            Library/Homebrew/overlay.rb \
-            Library/Homebrew/overlay/install_session.rb \
-            Library/Homebrew/test/formula_installer_spec.rb \
-            Library/Homebrew/test/overlay/install_session_spec.rb
-          bin/brew typecheck
-          bin/brew tests --no-parallel --only=formula_installer,overlay/install_session
 
           git rm .github/workflows/zz-overlay-install-session-prevalidate.yml
           git config user.name "github-actions[bot]"
@@ -136,4 +199,12 @@ jobs:
             Library/Homebrew/test/overlay/install_session_spec.rb \
             Library/Homebrew/test/support/overlay_architecture_test.sh
           git commit -m "Validate overlay install session boundary"
+
+          git diff --check c45f65b1a7840d5b6996088e7c63747f33868219...HEAD
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py \
+            c45f65b1a7840d5b6996088e7c63747f33868219 HEAD
+          bin/brew typecheck
+          bin/brew tests --no-parallel --only=formula_installer,overlay/install_session
+
           git push origin HEAD:refactor/overlay-maintainability
