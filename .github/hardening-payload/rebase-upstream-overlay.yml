@@ -1,0 +1,264 @@
+name: Rebase and validate overlay branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions: {}
+
+concurrency:
+  group: rebase-overlay-branch
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  prepare:
+    if: github.repository == 'wangzheng15534-blip/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.rebase.outputs.changed }}
+      before: ${{ steps.rebase.outputs.before }}
+      after: ${{ steps.rebase.outputs.after }}
+      tree: ${{ steps.rebase.outputs.tree }}
+    steps:
+      - name: Check out the deployment branch without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: overlay-store
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase onto current Homebrew main
+        id: rebase
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH=/usr/bin:/bin
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.hooksPath /dev/null
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --prune origin overlay-store
+          git fetch --prune upstream main
+          git checkout --detach origin/overlay-store
+
+          before="$(git rev-parse HEAD)"
+          printf 'before=%s\n' "${before}" >>"${GITHUB_OUTPUT}"
+          if ! git -c core.hooksPath=/dev/null rebase upstream/main; then
+            git rebase --abort || true
+            echo "Upstream rebase has semantic conflicts; overlay-store was left unchanged." >&2
+            exit 1
+          fi
+
+          after="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
+          if [[ "${before}" == "${after}" ]]; then
+            printf 'changed=false\n' >>"${GITHUB_OUTPUT}"
+          else
+            printf 'changed=true\n' >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish the immutable candidate with the repository token
+        if: steps.rebase.outputs.changed == 'true'
+        shell: bash
+        env:
+          AFTER: ${{ steps.rebase.outputs.after }}
+          EXPECTED_TREE: ${{ steps.rebase.outputs.tree }}
+          PREPARE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          export PATH=/usr/bin:/bin
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          test "$(git remote get-url origin)" = "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          isolated_home="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${PREPARE_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          candidate_ref=refs/heads/automation/overlay-rebase-candidate
+          candidate_before="$(
+            GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+              /usr/bin/git ls-remote --heads \
+                "https://github.com/${GITHUB_REPOSITORY}.git" "${candidate_ref}" |
+              awk '{print $1}'
+          )"
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -c core.hooksPath=/dev/null push \
+              --force-with-lease="${candidate_ref}:${candidate_before}" \
+              "https://github.com/${GITHUB_REPOSITORY}.git" \
+              "${AFTER}:${candidate_ref}"
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact proposed SHA on a fresh runner
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.after }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the remote candidate and comparison base
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: |
+          set -euo pipefail
+
+          export PATH=/usr/bin:/bin
+          git config core.hooksPath /dev/null
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --prune upstream main
+          git fetch --prune origin automation/overlay-rebase-candidate
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+          test "$(git rev-parse FETCH_HEAD)" = "${AFTER}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          git merge-base --is-ancestor upstream/main HEAD
+
+      - name: Validate patch formatting and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check upstream/main...HEAD
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "${test_script}"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Reject style offenses on the rebased overlay delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Verify the validated commit and tree
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
+          test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+
+  promote:
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.changed == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: overlay-promotion
+    permissions: {}
+    steps:
+      - name: Promote only the exact validated object on a fresh runner
+        shell: bash
+        env:
+          BEFORE: ${{ needs.prepare.outputs.before }}
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
+            echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+            exit 1
+          fi
+
+          isolated_home="$(mktemp -d)"
+          repository="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}" "${repository}" "${template_dir}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export PATH=/usr/bin:/bin
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${OVERLAY_PROMOTION_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          /usr/bin/git init "${repository}"
+          /usr/bin/git -C "${repository}" config core.hooksPath /dev/null
+          /usr/bin/git -C "${repository}" config transfer.fsckObjects true
+          /usr/bin/git -C "${repository}" config fetch.fsckObjects true
+          /usr/bin/git -C "${repository}" remote add origin \
+            https://github.com/wangzheng15534-blip/brew.git
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -C "${repository}" \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              fetch --no-tags --prune origin \
+                +refs/heads/automation/overlay-rebase-candidate:refs/remotes/origin/candidate \
+                +refs/heads/overlay-store:refs/remotes/origin/overlay-store
+
+          test "$(/usr/bin/git -C "${repository}" rev-parse refs/remotes/origin/candidate)" = "${AFTER}"
+          test "$(/usr/bin/git -C "${repository}" rev-parse refs/remotes/origin/overlay-store)" = "${BEFORE}"
+          test "$(/usr/bin/git -C "${repository}" rev-parse "${AFTER}^{tree}")" = "${EXPECTED_TREE}"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -C "${repository}" \
+              -c core.hooksPath=/dev/null \
+              push \
+                --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+                origin "${AFTER}:refs/heads/overlay-store"
