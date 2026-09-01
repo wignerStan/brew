@@ -60,18 +60,45 @@ grep -q "recovered interrupted overlay reinstall of foo" "${work}/restore.stderr
 grep -qx old "${prefix}/Cellar/foo/2.0/bin/foo"
 test ! -e "${restore}"
 
-# A replacement carrying a valid durable base-generation marker wins; the old
-# backup is discarded instead of being restored beneath later side effects.
+# A package-local generation marker is descriptive, not commit authority. A
+# stale marker in a replacement whose journal is still backed-up must
+# not discard the known-good private keg.
 rm -rf -- "${prefix}/Cellar/foo/2.0"
-committed="$(make_control reinstall-102-3333333333333333 backed-up)"
+stale="$(make_control reinstall-102-3333333333333333 backed-up)"
+mkdir -p "${stale}/backup/foo/2.0/bin" "${prefix}/Cellar/foo/2.0/bin"
+printf 'old\n' >"${stale}/backup/foo/2.0/bin/foo"
+printf 'new\n' >"${prefix}/Cellar/foo/2.0/bin/foo"
+printf '%064d\n' 0 >"${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+chmod 0600 "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+grep -qx old "${prefix}/Cellar/foo/2.0/bin/foo"
+test ! -e "${stale}"
+
+# Once the owner-locked control journal records the exact replacement
+# identity, later package code may remove the descriptive generation
+# marker without converting a post-commit failure into rollback.
+rm -rf -- "${prefix}/Cellar/foo/2.0"
+committed="$(make_control reinstall-104-5555555555555555 committed)"
 mkdir -p "${committed}/backup/foo/2.0/bin" "${prefix}/Cellar/foo/2.0/bin"
 printf 'old\n' >"${committed}/backup/foo/2.0/bin/foo"
 printf 'new\n' >"${prefix}/Cellar/foo/2.0/bin/foo"
 printf '%064d\n' 0 >"${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
 chmod 0600 "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
+printf '%064d\n' 0 >"${committed}/committed_base_generation"
+stat -Lc '%d' -- "${prefix}/Cellar/foo/2.0" >"${committed}/committed_device"
+stat -Lc '%i' -- "${prefix}/Cellar/foo/2.0" >"${committed}/committed_inode"
+chmod 0600 "${committed}/committed_base_generation"   "${committed}/committed_device" "${committed}/committed_inode"
+rm -f -- "${prefix}/Cellar/foo/2.0/.brew-overlay-base-generation"
 homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
 grep -qx new "${prefix}/Cellar/foo/2.0/bin/foo"
 test ! -e "${committed}"
+
+# Detached cleanup tombstones are deletion-only; partially removed
+# contents are never reinterpreted as an active reinstall journal.
+tombstone="${prefix}/Cellar/.homebrew-overlay-failed/.cleanup-reinstall-999-6666666666666666-7777777777777777"
+mkdir -p "${tombstone}/partial"
+homebrew-overlay-recover-reinstall-backups "${prefix}" "${base}"
+test ! -e "${tombstone}"
 
 # A live owner is never recovered by its own child synchronizer.
 rm -rf -- "${prefix}/Cellar/foo/2.0"
@@ -108,6 +135,9 @@ assert "overlay_session.commit!" in reinstall
 assert "Overlay.begin_mutation!" in session
 assert "ReinstallBackup.new" in session
 assert "committed_replacement?" in session
+assert "mark_reinstall_committed!" in overlay
+assert "committed_base_generation" in overlay
+assert ".cleanup-#{path.basename}" in overlay
 assert session.index("@keg.unlink") < session.index("ReinstallBackup.new")
 assert "class ReinstallBackup" in overlay
 assert "Cellar/\".homebrew-overlay-failed\"" not in overlay  # Path composition remains typed, not string interpolation.

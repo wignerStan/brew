@@ -16,6 +16,7 @@ module Homebrew
 
     @link_state_entries = T.let(nil, T.nilable(T::Hash[String, String]))
     @install_transactions = T.let({}, T::Hash[String, T.untyped])
+    @reinstall_backups = T.let({}, T::Hash[String, T.untyped])
     @mutation_lock = T.let(nil, T.nilable(File))
     @atomic_exchange_supported = T.let(false, T::Boolean)
 
@@ -464,14 +465,7 @@ module Homebrew
 
       sig { params(path: Pathname).void }
       def remove_tree_durable!(path)
-        return unless path.exist? || path.symlink?
-
-        parent = path.parent
-        FileUtils.rm_rf(path)
-        if path.exist? || path.symlink?
-          raise TransactionFailure, "could not remove overlay transaction path: #{path}"
-        end
-        Overlay.fsync_directory!(parent)
+        Overlay.remove_tree_durable!(path)
       end
     end
 
@@ -506,6 +500,9 @@ module Homebrew
         @metadata_formula = T.let(@root/"formula", Pathname)
         @metadata_version = T.let(@root/"version", Pathname)
         @metadata_state = T.let(@root/"state", Pathname)
+        @metadata_base_generation = T.let(@root/"committed_base_generation", Pathname)
+        @metadata_replacement_device = T.let(@root/"committed_device", Pathname)
+        @metadata_replacement_inode = T.let(@root/"committed_inode", Pathname)
         @owner_lock_path = T.let(@root/"owner.lock", Pathname)
         @backup_version = T.let(@root/"backup"/@formula_name/@version, Pathname)
         @final_rack = T.let(HOMEBREW_CELLAR/@formula_name, Pathname)
@@ -532,6 +529,7 @@ module Homebrew
         Overlay.fsync_directory!(backup_version.parent)
         Overlay.durable_atomic_write!(@metadata_state, "backed-up\n", mode: 0600)
         Overlay.clear_caches!
+        Overlay.register_reinstall_backup(self)
         self
       # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.
       rescue Exception # rubocop:disable Lint/RescueException
@@ -543,26 +541,112 @@ module Homebrew
           end
           cleanup_control_root!
         ensure
+          Overlay.unregister_reinstall_backup(self)
           release_owner_lock!
         end
         raise
       end
 
-      sig { returns(T::Boolean) }
-      def committed_replacement?
-        return false unless Overlay.local_keg_realization?(formula_name, version)
+      sig { params(keg_path: Pathname).void }
+      def mark_committed!(keg_path)
+        state = validate_control_state!
+        return if state == "committed" && committed_replacement?
+        if state != "backed-up"
+          raise TransactionFailure, "overlay reinstall cannot commit from state #{state.inspect}: #{@root}"
+        end
 
-        marker = @final_version/BASE_GENERATION_MARKER
+        candidate = keg_path.expand_path
+        replacement_available =
+          candidate == @final_version &&
+          Overlay.local_keg_realization?(formula_name, version)
+        unless replacement_available
+          raise TransactionFailure, "overlay reinstall replacement is unavailable: #{candidate}"
+        end
+
+        replacement_stat = candidate.lstat
+        safe_replacement = replacement_stat.directory? && replacement_stat.uid == Process.uid
+        raise TransactionFailure, "unsafe overlay reinstall replacement: #{candidate}" unless safe_replacement
+
+        marker = candidate/BASE_GENERATION_MARKER
         contents = Overlay.read_owned_file(
           marker,
           description: "administrator base-generation marker",
           max_bytes:   65,
         )
-        return false if contents.nil?
+        if contents.nil?
+          raise TransactionFailure, "overlay reinstall replacement has no base-generation marker: #{candidate}"
+        end
 
         generation = contents.chomp
         Overlay.validate_base_generation!(generation)
-        contents == "#{generation}\n"
+        if contents != "#{generation}\n"
+          raise TransactionFailure, "invalid overlay reinstall base-generation marker: #{marker}"
+        end
+
+        Overlay.durable_atomic_write!(@metadata_base_generation, "#{generation}\n", mode: 0600)
+        Overlay.durable_atomic_write!(@metadata_replacement_device, "#{replacement_stat.dev}\n", mode: 0600)
+        Overlay.durable_atomic_write!(@metadata_replacement_inode, "#{replacement_stat.ino}\n", mode: 0600)
+        Overlay.durable_atomic_write!(@metadata_state, "committed\n", mode: 0600)
+        Overlay.fsync_directory!(@root)
+      end
+
+      sig { returns(T::Boolean) }
+      def committed_replacement?
+        state = Overlay.read_owned_file(
+          @metadata_state,
+          description: "overlay reinstall state",
+          max_bytes:   32,
+        )
+        return false if state != "committed\n"
+
+        generation = Overlay.read_owned_file(
+          @metadata_base_generation,
+          description: "overlay reinstall committed base generation",
+          max_bytes:   65,
+        )
+        device = Overlay.read_owned_file(
+          @metadata_replacement_device,
+          description: "overlay reinstall committed device",
+          max_bytes:   32,
+        )
+        inode = Overlay.read_owned_file(
+          @metadata_replacement_inode,
+          description: "overlay reinstall committed inode",
+          max_bytes:   32,
+        )
+        complete_metadata =
+          generation&.match?(/\A[0-9a-f]{64}\n\z/) &&
+          device&.match?(/\A[0-9]+\n\z/) &&
+          inode&.match?(/\A[0-9]+\n\z/)
+        unless complete_metadata
+          raise TransactionFailure, "incomplete committed overlay reinstall metadata: #{@root}"
+        end
+
+        recorded_generation = generation.chomp
+        Overlay.validate_base_generation!(recorded_generation)
+        unless Overlay.local_keg_realization?(formula_name, version)
+          raise TransactionFailure, "committed overlay reinstall replacement is missing: #{@final_version}"
+        end
+
+        replacement_stat = @final_version.lstat
+        expected_identity = [device.to_i, inode.to_i]
+        actual_identity = [replacement_stat.dev, replacement_stat.ino]
+        if actual_identity != expected_identity
+          raise TransactionFailure, "committed overlay reinstall replacement changed: #{@final_version}"
+        end
+
+        marker = @final_version/BASE_GENERATION_MARKER
+        if marker.exist? || marker.symlink?
+          contents = Overlay.read_owned_file(
+            marker,
+            description: "administrator base-generation marker",
+            max_bytes:   65,
+          )
+          if contents != "#{recorded_generation}\n"
+            raise TransactionFailure, "committed overlay reinstall marker changed: #{marker}"
+          end
+        end
+        true
       end
 
       sig { void }
@@ -570,7 +654,11 @@ module Homebrew
         return if @finished
 
         Overlay.begin_mutation! unless Overlay.mutation_active?
-        validate_control_state!
+        state = validate_control_state!
+        if state == "committed"
+          raise TransactionFailure, "refusing to restore a committed overlay reinstall: #{@root}"
+        end
+
         prepare_final_rack!
         if @final_version.symlink?
           expected = Overlay.base_cellar/formula_name/version
@@ -586,10 +674,12 @@ module Homebrew
           end
 
           Overlay.remove_links_to!(@final_version)
-          FileUtils.rm_rf(@final_version)
-          if @final_version.exist? || @final_version.symlink?
-            raise TransactionFailure, "could not remove failed overlay reinstall target: #{@final_version}"
-          end
+          final_stat = @final_version.lstat
+          Overlay.remove_tree_durable!(
+            @final_version,
+            expected_device: final_stat.dev,
+            expected_inode:  final_stat.ino,
+          )
         end
 
         File.rename(backup_version, @final_version)
@@ -600,7 +690,7 @@ module Homebrew
         @finished = true
         Overlay.sync!(mutation: true)
       ensure
-        release_owner_lock! if @finished
+        release_owner_lock! if @finished || (!@root.exist? && !@root.symlink?)
       end
 
       sig { void }
@@ -611,7 +701,7 @@ module Homebrew
         cleanup_control_root!
         @finished = true
       ensure
-        release_owner_lock! if @finished
+        release_owner_lock! if @finished || (!@root.exist? && !@root.symlink?)
       end
 
       private
@@ -648,7 +738,7 @@ module Homebrew
         @owner_lock = nil
       end
 
-      sig { void }
+      sig { returns(String) }
       def validate_control_state!
         lock = @owner_lock
         if lock.nil? || lock.closed? || @owner_lock_path.symlink? || !@owner_lock_path.file?
@@ -678,11 +768,13 @@ module Homebrew
           max_bytes:   32,
         )
         valid_metadata = formula == "#{formula_name}\n" && recorded_version == "#{version}\n" &&
-                         ["prepared\n", "backed-up\n"].include?(state)
+                         ["prepared\n", "backed-up\n", "committed\n"].include?(state)
         raise TransactionFailure, "invalid overlay reinstall metadata: #{@root}" unless valid_metadata
 
         safe_backup = backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid
         raise TransactionFailure, "overlay reinstall backup is unavailable: #{backup_version}" unless safe_backup
+
+        T.must(state).chomp
       end
 
       sig { void }
@@ -705,18 +797,23 @@ module Homebrew
       sig { void }
       def cleanup_control_root!
         managed_root = @root.exist? || @root.symlink?
-        return unless managed_root
-
-        parent = @root.parent
-        safe_root = @root.directory? && !@root.symlink? && @root.stat.uid == Process.uid
-        raise TransactionFailure, "unsafe overlay reinstall control path: #{@root}" unless safe_root
-
-        FileUtils.rm_rf(@root)
-        if @root.exist? || @root.symlink?
-          raise TransactionFailure, "could not remove overlay reinstall control path: #{@root}"
+        unless managed_root
+          Overlay.unregister_reinstall_backup(self)
+          return
         end
 
-        Overlay.fsync_directory!(parent)
+        root_stat = @root.lstat
+        safe_root = root_stat.directory? && !@root.symlink? && root_stat.uid == Process.uid
+        raise TransactionFailure, "unsafe overlay reinstall control path: #{@root}" unless safe_root
+
+        Overlay.remove_tree_durable!(
+          @root,
+          expected_device: root_stat.dev,
+          expected_inode:  root_stat.ino,
+        )
+      ensure
+        control_root_removed = !@root.exist? && !@root.symlink?
+        Overlay.unregister_reinstall_backup(self) if control_root_removed
       end
     end
 
@@ -1048,6 +1145,75 @@ module Homebrew
       raise TransactionFailure, "could not durably remove overlay file #{path}: #{e.message}"
     end
 
+    sig {
+      params(
+        path:            Pathname,
+        expected_device: T.nilable(Integer),
+        expected_inode:  T.nilable(Integer),
+      ).void
+    }
+    def self.remove_tree_durable!(path, expected_device: nil, expected_inode: nil)
+      path = path.expand_path
+      path_present = path.exist? || path.symlink?
+      return unless path_present
+
+      parent = path.parent
+      parent_stat = parent.lstat
+      path_stat = path.lstat
+      expected_identity = if expected_device.nil? && expected_inode.nil?
+        true
+      elsif expected_device && expected_inode
+        path_stat.dev == expected_device && path_stat.ino == expected_inode
+      else
+        false
+      end
+      safe_path =
+        parent_stat.directory? &&
+        !parent.symlink? &&
+        parent_stat.uid == Process.uid &&
+        path_stat.directory? &&
+        !path.symlink? &&
+        path_stat.uid == Process.uid &&
+        expected_identity
+      raise TransactionFailure, "unsafe overlay cleanup path: #{path}" unless safe_path
+
+      tombstone = T.let(nil, T.nilable(Pathname))
+      32.times do
+        candidate = parent/".cleanup-#{path.basename}-#{SecureRandom.hex(8)}"
+        next if candidate.exist? || candidate.symlink?
+
+        begin
+          File.rename(path, candidate)
+        rescue Errno::EEXIST
+          next
+        end
+        tombstone = candidate
+        break
+      end
+      detached = !tombstone.nil? && !path.exist? && !path.symlink?
+      raise TransactionFailure, "could not detach overlay cleanup path: #{path}" unless detached
+
+      detached_path = tombstone
+      fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)
+      detached_stat = detached_path.lstat
+      stable_detach =
+        detached_stat.directory? &&
+        detached_stat.uid == path_stat.uid &&
+        detached_stat.dev == path_stat.dev &&
+        detached_stat.ino == path_stat.ino
+      raise TransactionFailure, "overlay cleanup path changed while detaching: #{path}" unless stable_detach
+
+      FileUtils.rm_rf(detached_path)
+      removed = !detached_path.exist? && !detached_path.symlink?
+      raise TransactionFailure, "could not remove detached overlay cleanup path: #{detached_path}" unless removed
+
+      fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)
+    rescue TransactionFailure
+      raise
+    rescue SystemCallError, IOError => e
+      raise TransactionFailure, "could not durably remove overlay tree #{path}: #{e.message}"
+    end
+
     sig { params(path: T.any(Pathname, String)).returns(T::Boolean) }
     def self.inherited_path?(path)
       return false unless active? && base_cellar.directory?
@@ -1339,6 +1505,30 @@ module Homebrew
       @install_transactions.delete(formula_name) if @install_transactions[formula_name] == transaction
     end
 
+    sig { params(backup: ReinstallBackup).void }
+    def self.register_reinstall_backup(backup)
+      key = "#{backup.formula_name}\0#{backup.version}"
+      existing = @reinstall_backups[key]
+      if existing && existing != backup
+        raise TransactionFailure, "another overlay reinstall backup is active for #{backup.formula_name}"
+      end
+
+      @reinstall_backups[key] = backup
+    end
+
+    sig { params(backup: ReinstallBackup).void }
+    def self.unregister_reinstall_backup(backup)
+      key = "#{backup.formula_name}\0#{backup.version}"
+      @reinstall_backups.delete(key) if @reinstall_backups[key] == backup
+    end
+
+    sig { params(formula_name: String, version: String, keg_path: Pathname).void }
+    def self.mark_reinstall_committed!(formula_name, version, keg_path)
+      key = "#{formula_name}\0#{version}"
+      backup = T.cast(@reinstall_backups[key], T.nilable(ReinstallBackup))
+      backup&.mark_committed!(keg_path)
+    end
+
     sig { params(formula_name: String).returns(T.nilable(Pathname)) }
     def self.install_rack(formula_name)
       transaction = @install_transactions[formula_name]
@@ -1472,12 +1662,12 @@ module Homebrew
           safe_probe = probe.directory? && !probe.symlink? && probe.stat.uid == Process.uid
           raise TransactionFailure, "unsafe atomic overlay exchange probe: #{probe}" unless safe_probe
 
-          FileUtils.rm_rf(probe)
-          if probe.exist? || probe.symlink?
-            raise TransactionFailure, "could not remove atomic overlay exchange probe: #{probe}"
-          end
-
-          fsync_directory!(parent)
+          probe_stat = probe.lstat
+          remove_tree_durable!(
+            probe,
+            expected_device: probe_stat.dev,
+            expected_inode:  probe_stat.ino,
+          )
         end
         sync!(mutation: true) if owns_mutation && mutation_active?
       end
@@ -1523,8 +1713,8 @@ module Homebrew
 
       begin_mutation! unless mutation_active?
       remove_links_to!(keg)
-      FileUtils.rm_rf(keg)
-      raise TransactionFailure, "could not discard failed local keg: #{keg}" if keg.exist? || keg.symlink?
+      keg_stat = keg.lstat
+      remove_tree_durable!(keg, expected_device: keg_stat.dev, expected_inode: keg_stat.ino)
 
       rack.rmdir_if_possible
       clear_caches!
@@ -1653,7 +1843,16 @@ module Homebrew
 
       return path.resolved_path unless inherited_prefix_link?(path)
 
-      path.realpath
+      resolved = path.realpath
+      cellar = canonical_path(base_cellar)
+      return unless path_under?(resolved, cellar)
+
+      components = resolved.relative_path_from(cellar).each_filename.to_a
+      return unless components.length.between?(1, 2)
+      return unless valid_formula_name?(T.must(components.first))
+      return if components.length == 2 && !valid_version_name?(T.must(components.last))
+
+      resolved
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, ArgumentError
       nil
     end

@@ -92,6 +92,7 @@ module Homebrew
           Overlay.bump_generation!
           @mutation_owned = false
         end
+        Overlay.mark_reinstall_committed!(formula_name, formula_version, keg.to_path)
       end
 
       sig { void }

@@ -98,6 +98,24 @@ RSpec.describe Homebrew::Overlay do
     expect(keg).to be_linked
   end
 
+  it "rejects an overlay-managed record whose final target escapes the base Cellar" do
+    outside = root/"outside/foo/1.0"
+    outside.mkpath
+    base_opt = base_prefix/"opt/foo"
+    user_opt = prefix/"opt/foo"
+    base_opt.dirname.mkpath
+    user_opt.dirname.mkpath
+    FileUtils.ln_s(outside, base_opt)
+    FileUtils.ln_s(base_opt, user_opt)
+    state_file = prefix/"var/homebrew/overlay/view.state"
+    state_file.dirname.mkpath
+    state_file.binwrite("opt/foo\0#{base_opt}\0")
+    state_file.chmod 0600
+    described_class.clear_caches!
+
+    expect(described_class.keg_record_target(user_opt)).to be_nil
+  end
+
   it "does not fully resolve an unmanaged user keg record" do
     base_keg = add_base_formula("foo", "1.0")
     intermediate = prefix/"unmanaged-intermediate"

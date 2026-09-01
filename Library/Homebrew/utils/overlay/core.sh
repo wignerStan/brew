@@ -540,14 +540,68 @@ homebrew-overlay-move-durable() {
   fi
 }
 
-homebrew-overlay-remove-tree-durable() {
+homebrew-overlay-delete-detached-tree-durable() {
   local path="$1"
   local parent="${path%/*}"
 
+  [[ ! -e "${path}" && ! -L "${path}" ]] && return 0
   [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+  [[ -d "${path}" && ! -L "${path}" && -O "${path}" ]] || return 1
   rm -rf --one-file-system -- "${path}" || return 1
   [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
   homebrew-overlay-fsync-directory "${parent}"
+}
+
+homebrew-overlay-cleanup-tombstones() {
+  local parent="$1"
+  local tombstone name
+
+  [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+  for tombstone in "${parent}"/.cleanup-*
+  do
+    [[ -e "${tombstone}" || -L "${tombstone}" ]] || continue
+    name="${tombstone##*/}"
+    [[ "${name}" =~ ^\.cleanup-[A-Za-z0-9._-]+-[0-9a-f]{16}$ ]] || {
+      echo "Error: invalid overlay cleanup tombstone: ${tombstone}" >&2
+      return 1
+    }
+    [[ -d "${tombstone}" && ! -L "${tombstone}" && -O "${tombstone}" ]] || {
+      echo "Error: unsafe overlay cleanup tombstone: ${tombstone}" >&2
+      return 1
+    }
+    homebrew-overlay-delete-detached-tree-durable "${tombstone}" || return 1
+  done
+}
+
+homebrew-overlay-remove-tree-durable() {
+  local path="$1"
+  local parent="${path%/*}"
+  local name="${path##*/}"
+  local identity detached_identity nonce tombstone=""
+  local attempt
+
+  [[ ! -e "${path}" && ! -L "${path}" ]] && return 0
+  [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && -w "${parent}" ]] || return 1
+  [[ -d "${path}" && ! -L "${path}" && -O "${path}" ]] || return 1
+  identity="$(stat -Lc '%d:%i' -- "${path}")" || return 1
+  for attempt in {1..32}
+  do
+    nonce="$(printf '%s\0' "$$" "${RANDOM}" "${attempt}" "$(date +%s%N)" | sha256sum | cut -c1-16)" || return 1
+    tombstone="${parent}/.cleanup-${name}-${nonce}"
+    if mv -nT -- "${path}" "${tombstone}" && [[ ! -e "${path}" && ! -L "${path}" ]]
+    then
+      break
+    fi
+    tombstone=""
+  done
+  [[ -n "${tombstone}" ]] || return 1
+  homebrew-overlay-fsync-directory "${parent}" || return 1
+  detached_identity="$(stat -Lc '%d:%i' -- "${tombstone}")" || return 1
+  [[ "${detached_identity}" == "${identity}" ]] || {
+    echo "Error: overlay cleanup path changed while detaching: ${path}" >&2
+    return 1
+  }
+  homebrew-overlay-delete-detached-tree-durable "${tombstone}"
 }
 
 homebrew-overlay-ensure-generation() {
@@ -1818,7 +1872,7 @@ homebrew-overlay-recover-formula-transactions() {
   local staging_root staging_version replacement_root replacement_rack replacement_version
   local failed_root failed_rack failed_version final_marker replacement_marker failed_marker
   local base_generation_marker recorded_generation final_marker_id replacement_marker_id failed_marker_id
-  local owner_lock owner_lock_fd lock_dir
+  local owner_lock owner_lock_fd lock_dir cleanup_parent
 
   HOMEBREW_OVERLAY_FORMULA_RECOVERED=0
   HOMEBREW_OVERLAY_FORMULA_ACTIVE=0
@@ -1831,6 +1885,10 @@ homebrew-overlay-recover-formula-transactions() {
   homebrew-overlay-safe-mkdir "${prefix}" "${staging_parent}" || return 1
   homebrew-overlay-safe-mkdir "${prefix}" "${replacement_parent}" || return 1
   homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+  for cleanup_parent in "${transactions}" "${staging_parent}" "${replacement_parent}" "${failed_parent}"
+  do
+    homebrew-overlay-cleanup-tombstones "${cleanup_parent}" || return 1
+  done
 
   # FormulaTransaction publishes journals by renaming a complete hidden
   # .new-<id> directory to <id>. A crash before that rename may leave only the
@@ -2179,11 +2237,13 @@ homebrew-overlay-recover-reinstall-backups() {
   local failed_parent="${prefix}/Cellar/.homebrew-overlay-failed"
   local root id owner_lock owner_fd formula version state backup_rack backup_version
   local local_rack final_version base_rack base_version marker generation target
+  local committed_generation committed_device committed_inode current_identity expected_identity
   local backup_present=0 metadata_complete=0 committed=0
   local -a roots=()
 
   HOMEBREW_OVERLAY_REINSTALL_RECOVERED=0
   homebrew-overlay-safe-mkdir "${prefix}" "${failed_parent}" || return 1
+  homebrew-overlay-cleanup-tombstones "${failed_parent}" || return 1
   roots=("${failed_parent}"/reinstall-*)
   for root in "${roots[@]}"
   do
@@ -2254,11 +2314,39 @@ homebrew-overlay-recover-reinstall-backups() {
         exec {owner_fd}>&-
         return 1
       }
-      [[ "${state}" == prepared || "${state}" == backed-up ]] || {
+      [[ "${state}" == prepared || "${state}" == backed-up || "${state}" == committed ]] || {
         echo "Error: invalid overlay reinstall state '${state}': ${root}" >&2
         exec {owner_fd}>&-
         return 1
       }
+      if [[ "${state}" == committed ]]
+      then
+        [[ -f "${root}/committed_base_generation" && ! -L "${root}/committed_base_generation" &&
+           -f "${root}/committed_device" && ! -L "${root}/committed_device" &&
+           -f "${root}/committed_inode" && ! -L "${root}/committed_inode" ]] || {
+          echo "Error: incomplete committed overlay reinstall metadata: ${root}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+        committed_generation="$(homebrew-overlay-read-owned-line "${root}/committed_base_generation")" || {
+          exec {owner_fd}>&-
+          return 1
+        }
+        committed_device="$(homebrew-overlay-read-owned-line "${root}/committed_device")" || {
+          exec {owner_fd}>&-
+          return 1
+        }
+        committed_inode="$(homebrew-overlay-read-owned-line "${root}/committed_inode")" || {
+          exec {owner_fd}>&-
+          return 1
+        }
+        homebrew-overlay-base-generation-valid "${committed_generation}" || return 1
+        [[ "${committed_device}" =~ ^[0-9]+$ && "${committed_inode}" =~ ^[0-9]+$ ]] || {
+          echo "Error: invalid committed overlay reinstall identity: ${root}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+      fi
       metadata_complete=1
     fi
 
@@ -2273,6 +2361,62 @@ homebrew-overlay-recover-reinstall-backups() {
       echo "Error: overlay reinstall backup has incomplete metadata: ${root}" >&2
       exec {owner_fd}>&-
       return 1
+    fi
+
+    local_rack="${prefix}/Cellar/${formula}"
+    final_version="${local_rack}/${version}"
+    base_rack="${base_prefix}/Cellar/${formula}"
+    base_version="${base_rack}/${version}"
+    committed=0
+    if [[ "${state}" == committed ]]
+    then
+      [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]] || {
+        echo "Error: committed overlay reinstall replacement is missing: ${final_version}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      current_identity="$(stat -Lc '%d:%i' -- "${final_version}")" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      expected_identity="${committed_device}:${committed_inode}"
+      [[ "${current_identity}" == "${expected_identity}" ]] || {
+        echo "Error: committed overlay reinstall replacement changed: ${final_version}" >&2
+        exec {owner_fd}>&-
+        return 1
+      }
+      marker="${final_version}/.brew-overlay-base-generation"
+      if [[ -e "${marker}" || -L "${marker}" ]]
+      then
+        [[ -f "${marker}" && ! -L "${marker}" ]] || {
+          echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+        generation="$(homebrew-overlay-read-line "${marker}" "${EUID}" 65)" || {
+          echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+        [[ "${generation}" == "${committed_generation}" ]] || {
+          echo "Error: committed overlay reinstall marker changed: ${marker}" >&2
+          exec {owner_fd}>&-
+          return 1
+        }
+      fi
+      committed=1
+    fi
+
+    if [[ "${committed}" -eq 1 ]]
+    then
+      homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
+        exec {owner_fd}>&-
+        return 1
+      }
+      homebrew-overlay-remove-tree-durable "${root}" || return 1
+      exec {owner_fd}>&-
+      HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
+      continue
     fi
 
     if [[ "${backup_present}" -eq 0 ]]
@@ -2291,42 +2435,6 @@ homebrew-overlay-recover-reinstall-backups() {
       echo "Error: overlay reinstall backup is missing: ${root}" >&2
       exec {owner_fd}>&-
       return 1
-    fi
-
-    local_rack="${prefix}/Cellar/${formula}"
-    final_version="${local_rack}/${version}"
-    base_rack="${base_prefix}/Cellar/${formula}"
-    base_version="${base_rack}/${version}"
-    committed=0
-    if [[ -d "${final_version}" && ! -L "${final_version}" && -O "${final_version}" ]]
-    then
-      marker="${final_version}/.brew-overlay-base-generation"
-      if [[ -f "${marker}" && ! -L "${marker}" ]]
-      then
-        generation="$(homebrew-overlay-read-line "${marker}" "${EUID}" 65)" || {
-          echo "Error: unsafe committed overlay reinstall marker: ${marker}" >&2
-          exec {owner_fd}>&-
-          return 1
-        }
-        homebrew-overlay-base-generation-valid "${generation}" || {
-          echo "Error: invalid committed overlay reinstall marker: ${marker}" >&2
-          exec {owner_fd}>&-
-          return 1
-        }
-        committed=1
-      fi
-    fi
-
-    if [[ "${committed}" -eq 1 ]]
-    then
-      homebrew-overlay-lock-fd-valid "${owner_fd}" "${owner_lock}" "${EUID}" || {
-        exec {owner_fd}>&-
-        return 1
-      }
-      homebrew-overlay-remove-tree-durable "${root}" || return 1
-      exec {owner_fd}>&-
-      HOMEBREW_OVERLAY_REINSTALL_RECOVERED=1
-      continue
     fi
 
     if [[ -L "${local_rack}" ]]
