@@ -11,7 +11,8 @@ on:
       - 'docs/Native-User-Overlay*'
   push:
     branches:
-      - fix/overlay-review-hardening
+      - 'fix/overlay-*'
+      - 'refactor/overlay-*'
 
 permissions:
   contents: read
