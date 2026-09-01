@@ -14,6 +14,7 @@ changed = subprocess.check_output(
         "git",
         "diff",
         "--find-renames",
+        "--find-copies-harder",
         "--name-only",
         "--diff-filter=ACMR",
         comparison,
@@ -27,13 +28,15 @@ if not changed:
     raise SystemExit(0)
 
 # Keep the broad style pathspec here instead of narrowing it to destination
-# paths. Git needs both sides of a rename in view; otherwise a pure move looks
-# like a full-file addition and every pre-existing offense becomes "new".
+# paths. Git needs both sides of a move or extraction in view; otherwise copied
+# implementation files look like full additions and every pre-existing offense
+# becomes "new".
 patch = subprocess.check_output(
     [
         "git",
         "diff",
         "--find-renames",
+        "--find-copies-harder",
         "--unified=0",
         "--no-color",
         comparison,
