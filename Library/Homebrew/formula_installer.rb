@@ -153,7 +153,7 @@ class FormulaInstaller
     # Take the original formula instance, which might have been swapped from an API instance to a source instance
     @formula = T.let(T.must(previously_fetched_formula), Formula) if previously_fetched_formula
     @overlay_install_session = T.let(
-      Homebrew::Overlay::InstallSession.new(@formula),
+      Homebrew::Overlay::InstallSession.new,
       Homebrew::Overlay::InstallSession,
     )
 
@@ -588,7 +588,7 @@ class FormulaInstaller
 
     return if only_deps?
 
-    @overlay_install_session.start!
+    @overlay_install_session.start!(formula)
 
     formula.deprecated_flags.each do |deprecated_option|
       old_flag = deprecated_option.old_flag

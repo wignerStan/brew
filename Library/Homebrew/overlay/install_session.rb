@@ -7,9 +7,11 @@ module Homebrew
     # FormulaInstaller retains native sequencing and delegates only the
     # lower-layer lease, transaction, generation, and recovery lifecycle.
     class InstallSession
-      sig { params(formula: T.untyped).void }
-      def initialize(formula)
-        @formula = formula
+      sig { void }
+      def initialize
+        @formula_name = T.let(nil, T.nilable(String))
+        @formula_version = T.let(nil, T.nilable(String))
+        @formula_full_name = T.let(nil, T.nilable(String))
         @transaction = T.let(nil, T.nilable(FormulaTransaction))
         @base_generation = T.let(nil, T.nilable(String))
         @local_keg_preexisting = T.let(false, T::Boolean)
@@ -19,17 +21,19 @@ module Homebrew
         @base_mutation_lease = T.let(nil, T.nilable(File))
       end
 
-      sig { void }
-      def start!
+      sig { params(formula: T.untyped).void }
+      def start!(formula)
+        @formula_name = formula.name
+        @formula_version = formula.pkg_version.to_s
+        @formula_full_name = formula.full_name
+
         if Overlay.active?
           @base_mutation_lease = Overlay.acquire_base_mutation_lease
-          formula_name = @formula.name
-          version = @formula.pkg_version.to_s
-          @local_keg_preexisting = Overlay.local_keg_realization?(formula_name, version)
+          @local_keg_preexisting = Overlay.local_keg_realization?(formula_name, formula_version)
           generation = Overlay.current_base_generation
           @base_generation = generation
-          @transaction = Overlay.begin_formula_transaction(@formula, base_generation: generation)
-          Overlay.validate_local_install_target!(formula_name, version) if @transaction.nil?
+          @transaction = Overlay.begin_formula_transaction(formula, base_generation: generation)
+          Overlay.validate_local_install_target!(formula_name, formula_version) if @transaction.nil?
         end
 
         if Homebrew::EnvConfig.overlay? && !Overlay.mutation_active?
@@ -116,6 +120,15 @@ module Homebrew
 
       private
 
+      sig { returns(String) }
+      def formula_name = T.must(@formula_name)
+
+      sig { returns(String) }
+      def formula_version = T.must(@formula_version)
+
+      sig { returns(String) }
+      def formula_full_name = T.must(@formula_full_name)
+
       sig { void }
       def verify_base_generation!
         generation = @base_generation
@@ -136,8 +149,7 @@ module Homebrew
         return unless Homebrew.failed?
 
         raise TransactionFailure,
-              "#{@formula.full_name} failed before its private keg was committed; " \
-              "uncommitted package state was discarded"
+              "#{formula_full_name} failed before its private keg was committed; "                       "uncommitted package state was discarded"
       end
 
       sig { void }
@@ -146,7 +158,7 @@ module Homebrew
         return if @transaction || @local_keg_preexisting || @local_keg_committed
         return if @base_generation.nil?
 
-        Overlay.discard_local_keg!(@formula.name, @formula.pkg_version.to_s)
+        Overlay.discard_local_keg!(formula_name, formula_version)
       end
 
       sig { void }
