@@ -1,4 +1,4 @@
-name: Validate corrected overlay review follow-up source
+name: Format and validate overlay review follow-up source
 
 on:
   push:
@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  correct:
-    if: github.event.head_commit.message == 'Validate corrected overlay review follow-up source'
+  validate:
+    if: github.event.head_commit.message == 'Format and validate overlay review follow-up source'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -20,43 +20,39 @@ jobs:
           ref: automation/overlay-review-followup-candidate
           fetch-depth: 0
 
-      - name: Apply reviewed corrections and run source-only gates
+      - name: Format overlay-owned changes and run source-only gates
         shell: bash
         env:
           BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
           CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
         run: |
           set -euo pipefail
-          git cat-file blob 27292f7979afbadd35ff294a718402ca9be7e747 > /tmp/style-workflow.yml
-          python3 <<'PY'
-          from pathlib import Path
 
-          source = Path('/tmp/style-workflow.yml').read_text(encoding='utf-8')
-          marker = '        run: |\n'
-          start = source.index(marker) + len(marker)
-          lines = source[start:].splitlines()
-          script = '\n'.join(
-              line[10:] if line.startswith('          ') else line
-              for line in lines
-          ) + '\n'
+          bin/brew style --fix \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/overlay/core_spec.rb \
+            Library/Homebrew/test/overlay/reinstall_backup_spec.rb
 
-          label = '    "committed restore guard spacing",\n)\n'
-          label_end = script.index(label) + len(label)
-          block_start = script.rfind('core = replace_once(\n', 0, label_end)
-          if block_start < 0:
-              raise SystemExit('missing committed restore spacing block')
-          replacement = (
-              'restore_method_start = core.index(restore_start)\n'
-              'prepare_position = core.index("        prepare_final_rack!\\n", restore_method_start)\n'
-              'if core[prepare_position - 2:prepare_position] != "\\n\\n":\n'
-              '    core = core[:prepare_position] + "\\n" + core[prepare_position:]\n'
-          )
-          script = script[:block_start] + replacement + script[label_end:]
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/overlay/core_spec.rb \
+            Library/Homebrew/test/overlay/reinstall_backup_spec.rb
+          git commit --amend --no-edit
 
-          workflow_gate = 'bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"\n'
-          if script.count(workflow_gate) != 1:
-              raise SystemExit('unexpected workflow-gate invocation')
-          script = script.replace(workflow_gate, '', 1)
-          Path('/tmp/style-correct.sh').write_text(script, encoding='utf-8')
-          PY
-          bash /tmp/style-correct.sh
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" -eq 1
+          test -z "$(git rev-list --merges "${BASE_SHA}..HEAD")"
+          git diff --check "${BASE_SHA}...HEAD"
+          bash Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_transaction_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${BASE_SHA}" HEAD
+          bin/brew typecheck
+          bin/brew tests --no-parallel \
+            --only=overlay/core,overlay/install_session,overlay/reinstall_session,overlay/reinstall_backup,formula_installer
+
+          git push --force origin "HEAD:refs/heads/${CANDIDATE_BRANCH}"
+          printf 'source_candidate=%s\n' "$(git rev-parse HEAD)"
