@@ -1,0 +1,126 @@
+name: Build final overlay promotion and recovery hardening
+
+on:
+  push:
+    branches:
+      - automation/overlay-hardening-finalize
+
+permissions:
+  contents: write
+
+concurrency:
+  group: overlay-hardening-finalize
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event.head_commit.message == 'Run overlay hardening generator'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out the generator branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-hardening-finalize
+          fetch-depth: 0
+
+      - name: Build and validate a clean linear hardening stack
+        shell: bash
+        env:
+          BASE_SHA: 02c56ee0f81f49fdf963dc8924180929322de3a4
+          FINAL_BRANCH: fix/overlay-promotion-recovery-hardening
+        run: |
+          set -euo pipefail
+
+          git show "${GITHUB_SHA}:.github/scripts/generate_overlay_hardening.py" \
+            >/tmp/generate_overlay_hardening.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/tmp/generate_overlay_hardening.py')
+          source = path.read_text(encoding='utf-8')
+          old = '''def insert_before_once(path: str, marker: str, insertion: str, label: str) -> None:
+              replace_once(path, marker, insertion + marker, label)
+          '''
+          new = '''def insert_before_once(path: str, marker: str, insertion: str, label: str) -> None:
+              file_path = Path(path)
+              source = file_path.read_text(encoding="utf-8")
+              index = source.rfind(marker)
+              if index < 0:
+                  raise SystemExit(f"{label}: marker not found")
+              file_path.write_text(source[:index] + insertion + source[index:], encoding="utf-8")
+          '''
+          if old not in source:
+              raise SystemExit('generator insertion helper did not match')
+          path.write_text(source.replace(old, new), encoding='utf-8')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.hooksPath /dev/null
+          git checkout --detach "${BASE_SHA}"
+
+          python3 /tmp/generate_overlay_hardening.py recovery
+          chmod +x \
+            Library/Homebrew/test/support/overlay_commit_boundary_test.sh \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+
+          git diff --check
+          bash -n \
+            Library/Homebrew/utils/overlay.sh \
+            Library/Homebrew/utils/overlay/core.sh \
+            Library/Homebrew/test/support/overlay_commit_boundary_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          bash Library/Homebrew/test/support/overlay_commit_boundary_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_transaction_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          bin/brew typecheck
+          bin/brew tests --no-parallel \
+            --only=overlay/core,overlay/install_session,overlay/reinstall_session,overlay/reinstall_backup,formula_installer
+
+          git add -- \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/formula_installer_spec.rb \
+            Library/Homebrew/test/overlay/core_spec.rb \
+            Library/Homebrew/test/overlay/install_session_spec.rb \
+            Library/Homebrew/test/support/overlay_commit_boundary_test.sh
+          git commit -m "Close overlay reinstall commit and mutation ownership gaps"
+
+          python3 /tmp/generate_overlay_hardening.py workflows
+          chmod +x Library/Homebrew/test/support/overlay_rebase_workflow_test.sh
+
+          git diff --check
+          bash -n Library/Homebrew/test/support/overlay_rebase_workflow_test.sh
+          bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${BASE_SHA}" HEAD
+          bin/brew typecheck
+
+          git add -- \
+            .github/workflows/rebase-upstream-overlay.yml \
+            .github/workflows/overlay-validation.yml \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
+            docs/Overlay-Promotion-Credentials.md
+          git commit -m "Isolate overlay validation from promotion credentials"
+
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" -eq 2
+          test -z "$(git rev-list --merges "${BASE_SHA}..HEAD")"
+          git diff --check "${BASE_SHA}...HEAD"
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+          bin/brew typecheck
+
+          final_sha="$(git rev-parse HEAD)"
+          final_tree="$(git rev-parse 'HEAD^{tree}')"
+          expected="$(
+            git ls-remote --heads origin "refs/heads/${FINAL_BRANCH}" | awk '{print $1}'
+          )"
+          git push \
+            --force-with-lease="refs/heads/${FINAL_BRANCH}:${expected}" \
+            origin "${final_sha}:refs/heads/${FINAL_BRANCH}"
+
+          printf 'final_sha=%s\n' "${final_sha}"
+          printf 'final_tree=%s\n' "${final_tree}"
