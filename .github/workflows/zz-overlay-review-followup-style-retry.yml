@@ -1,0 +1,51 @@
+name: Retry overlay review follow-up style candidate
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-followup-work
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.event.head_commit.message == 'Retry overlay review follow-up style candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out generator branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-review-followup-work
+          fetch-depth: 0
+
+      - name: Execute delimiter-corrected source generator
+        shell: bash
+        env:
+          BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
+          CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
+        run: |
+          set -euo pipefail
+          git cat-file blob eaa56e3a11574d11d0ab8d54b75e57c002ba9961 > /tmp/source-wrapper.yml
+          python3 <<'PY'
+          from pathlib import Path
+
+          source = Path('/tmp/source-wrapper.yml').read_text(encoding='utf-8')
+          marker = '        run: |\n'
+          start = source.index(marker) + len(marker)
+          lines = source[start:].splitlines()
+          script = '\n'.join(
+              line[10:] if line.startswith('          ') else line
+              for line in lines
+          ) + '\n'
+
+          opening = "style_script = dedent(r'''\n"
+          closing = "\n''').lstrip()\n\npath_marker ="
+          if script.count(opening) != 1 or script.count(closing) != 1:
+              raise SystemExit('unexpected style-script delimiter shape')
+          script = script.replace(opening, 'style_script = dedent(r"""\n', 1)
+          script = script.replace(closing, '\n""").lstrip()\n\npath_marker =', 1)
+          Path('/tmp/source-generator.sh').write_text(script, encoding='utf-8')
+          PY
+          bash /tmp/source-generator.sh
