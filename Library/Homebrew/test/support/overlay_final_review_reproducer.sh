@@ -27,6 +27,7 @@ tests=(
   overlay_ruby_reader_integrity_test.sh
   overlay_runtime_boot_test.sh
   overlay_loader_test.sh
+  overlay_architecture_test.sh
   overlay_marker_reader_integrity_test.sh
   overlay_removal_partition_test.sh
   overlay_rebase_workflow_test.sh
