@@ -35,6 +35,8 @@ of retaining broad Homebrew objects.
 ## Current extraction state
 
 - `core.rb` contains the original subsystem implementation unchanged.
+- `install_session.rb` owns the lease, transaction, generation, and failure
+  scope spanning `FormulaInstaller#install` and `#finish`.
 - `reinstall_session.rb` owns inherited/private reinstall preparation,
   rollback, and commit policy; `reinstall/reinstall.rb` now keeps native backup
   behavior and delegates through one overlay session.

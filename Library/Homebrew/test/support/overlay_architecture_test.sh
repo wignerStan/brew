@@ -7,6 +7,7 @@ ruby_loader="${repo}/Library/Homebrew/overlay.rb"
 ruby_impl="${repo}/Library/Homebrew/overlay"
 shell_loader="${repo}/Library/Homebrew/utils/overlay.sh"
 shell_impl="${repo}/Library/Homebrew/utils/overlay"
+formula_installer="${repo}/Library/Homebrew/formula_installer.rb"
 reinstall_adapter="${repo}/Library/Homebrew/reinstall/reinstall.rb"
 
 [[ "$(wc -l <"${ruby_loader}")" -le 15 ]] || {
@@ -20,6 +21,10 @@ reinstall_adapter="${repo}/Library/Homebrew/reinstall/reinstall.rb"
 
 grep -Fx 'require "overlay/core"' "${ruby_loader}" >/dev/null || {
   echo "Error: public Ruby overlay loader no longer loads overlay/core" >&2
+  exit 1
+}
+grep -Fx 'require "overlay/install_session"' "${ruby_loader}" >/dev/null || {
+  echo "Error: public Ruby overlay loader no longer loads the install session" >&2
   exit 1
 }
 grep -Fx 'require "overlay/reinstall_session"' "${ruby_loader}" >/dev/null || {
@@ -41,6 +46,26 @@ then
   echo "Error: overlay reinstall policy leaked back into the upstream-facing adapter" >&2
   exit 1
 fi
+
+grep -F '@overlay_install_session = ' "${formula_installer}" >/dev/null || {
+  echo "Error: FormulaInstaller no longer delegates through InstallSession" >&2
+  exit 1
+}
+for legacy_state in \
+  @overlay_transaction \
+  @overlay_base_generation \
+  @overlay_local_keg_preexisting \
+  @overlay_local_keg_committed \
+  @overlay_mutation_owned \
+  @overlay_previous_failed \
+  @overlay_base_mutation_lease
+do
+  if grep -Fq "${legacy_state}" "${formula_installer}"
+  then
+    echo "Error: FormulaInstaller owns legacy overlay state: ${legacy_state}" >&2
+    exit 1
+  fi
+done
 
 while IFS= read -r file
 do
