@@ -37,40 +37,42 @@ jobs:
               for line in lines
           ) + '\n'
 
-          old_helper = '''def replace_once(source: str, old: str, new: str, label: str) -> str:
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one match, found {count}")
-              return source.replace(old, new)
-'''
-          new_helper = '''def normalize_block(value: str) -> str:
-              lines = value.splitlines(keepends=True)
-              if len(lines) < 2:
-                  return value
-              first_indent = len(lines[0]) - len(lines[0].lstrip(" "))
-              continuation = [
-                  len(line) - len(line.lstrip(" "))
-                  for line in lines[1:]
-                  if line.strip()
-              ]
-              if not continuation:
-                  return value
-              extra = min(continuation) - first_indent
-              if extra <= 0:
-                  return value
-              return lines[0] + "".join(
-                  line[extra:] if line.startswith(" " * extra) else line
-                  for line in lines[1:]
-              )
-
-          def replace_once(source: str, old: str, new: str, label: str) -> str:
-              old = normalize_block(old)
-              new = normalize_block(new)
-              count = source.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one match, found {count}")
-              return source.replace(old, new)
-'''
+          old_helper = (
+              'def replace_once(source: str, old: str, new: str, label: str) -> str:\n'
+              '    count = source.count(old)\n'
+              '    if count != 1:\n'
+              '        raise SystemExit(f"{label}: expected one match, found {count}")\n'
+              '    return source.replace(old, new)\n'
+          )
+          new_helper = (
+              'def normalize_block(value: str) -> str:\n'
+              '    lines = value.splitlines(keepends=True)\n'
+              '    if len(lines) < 2:\n'
+              '        return value\n'
+              '    first_indent = len(lines[0]) - len(lines[0].lstrip(" "))\n'
+              '    continuation = [\n'
+              '        len(line) - len(line.lstrip(" "))\n'
+              '        for line in lines[1:]\n'
+              '        if line.strip()\n'
+              '    ]\n'
+              '    if not continuation:\n'
+              '        return value\n'
+              '    extra = min(continuation) - first_indent\n'
+              '    if extra <= 0:\n'
+              '        return value\n'
+              '    return lines[0] + "".join(\n'
+              '        line[extra:] if line.startswith(" " * extra) else line\n'
+              '        for line in lines[1:]\n'
+              '    )\n'
+              '\n'
+              'def replace_once(source: str, old: str, new: str, label: str) -> str:\n'
+              '    old = normalize_block(old)\n'
+              '    new = normalize_block(new)\n'
+              '    count = source.count(old)\n'
+              '    if count != 1:\n'
+              '        raise SystemExit(f"{label}: expected one match, found {count}")\n'
+              '    return source.replace(old, new)\n'
+          )
           if script.count(old_helper) != 1:
               raise SystemExit('unexpected replacement helper shape')
           script = script.replace(old_helper, new_helper, 1)
