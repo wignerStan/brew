@@ -4,51 +4,96 @@ set -euo pipefail
 repository="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repository="$(cd "${repository}" && pwd -P)"
 
-python3 - "${repository}/Library/Homebrew/formula_installer.rb" <<'PY'
+python3 - \
+  "${repository}/Library/Homebrew/formula_installer.rb" \
+  "${repository}/Library/Homebrew/overlay/install_session.rb" <<'PY'
 from pathlib import Path
 import sys
 
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-start = source.index("  def finish\n")
-end = source.index("\n  sig { returns(String) }\n  def summary", start)
-finish = source[start:end]
+installer = Path(sys.argv[1]).read_text(encoding="utf-8")
+session = Path(sys.argv[2]).read_text(encoding="utf-8")
+
+finish_start = installer.index("  def finish\n")
+finish_end = installer.index("\n  sig { returns(String) }\n  def summary", finish_start)
+finish = installer[finish_start:finish_end]
 
 ordered = [
-    "@overlay_transaction&.publish!",
+    "@overlay_install_session.publish!",
     "fix_dynamic_linkage(keg) if fix_linkage",
-    "@overlay_transaction.commit!",
+    "@overlay_install_session.commit!(keg)",
     "link(keg)",
     "install_service",
     "formula.install_etc_var",
 ]
 positions = [finish.index(fragment) for fragment in ordered]
 if positions != sorted(positions) or len(set(positions)) != len(positions):
-    raise SystemExit(f"overlay package commit boundary is out of order: {list(zip(ordered, positions))}")
+    raise SystemExit(
+        f"overlay package commit boundary is out of order: {list(zip(ordered, positions))}"
+    )
 
-required = [
-    "return if overlay_package_committed?",
-    "return unless @overlay_base_generation",
+installer_required = [
+    "matching native Homebrew's installed-but-unlinked/post-install-failed",
+    "@overlay_install_session.abort!",
+    "@overlay_install_session.close!",
+]
+for fragment in installer_required:
+    if fragment not in installer:
+        raise SystemExit(f"missing FormulaInstaller commit-boundary guard: {fragment}")
+
+session_required = [
+    "return if package_committed?",
+    "return if @base_generation.nil?",
     "return unless Homebrew.failed?",
     "uncommitted package state was discarded",
     "transaction.rollback! if transaction && !transaction.finished?",
-    "matching native Homebrew's installed-but-unlinked/post-install-failed",
 ]
-for fragment in required:
-    if fragment not in source:
-        raise SystemExit(f"missing overlay commit-boundary guard: {fragment}")
+for fragment in session_required:
+    if fragment not in session:
+        raise SystemExit(f"missing InstallSession commit-boundary guard: {fragment}")
 
-install_start = source.index("  def install\n")
-install_end = source.index("\n  sig { void }\n  def check_conflicts", install_start)
-install = source[install_start:install_end]
-isolation_order = [
-    "if @overlay_base_generation",
-    "@overlay_previous_failed = Homebrew.failed?",
-    "Homebrew.failed = false",
-    "raise_overlay_transaction_failure! if @overlay_base_generation",
+install_start = installer.index("  def install\n")
+install_end = installer.index("\n  sig { void }\n  def check_conflicts", install_start)
+install = installer[install_start:install_end]
+install_order = [
+    "@overlay_install_session.start!(formula)",
+    "@overlay_install_session.validate_install!",
 ]
-isolation_positions = [install.index(fragment) for fragment in isolation_order]
+install_positions = [install.index(fragment) for fragment in install_order]
+if install_positions != sorted(install_positions):
+    raise SystemExit(
+        f"overlay install-session validation is out of order: "
+        f"{list(zip(install_order, install_positions))}"
+    )
+
+start_method_start = session.index("      def start!(formula)\n")
+start_method_end = session.index(
+    "      sig { returns(T::Hash[String, String]) }\n"
+    "      def build_environment\n",
+    start_method_start,
+)
+start_method = session[start_method_start:start_method_end]
+isolation_order = [
+    "return if @base_generation.nil?",
+    "@previous_failed = Homebrew.failed?",
+    "Homebrew.failed = false",
+]
+isolation_positions = [start_method.index(fragment) for fragment in isolation_order]
 if isolation_positions != sorted(isolation_positions):
-    raise SystemExit(f"overlay non-raising failure isolation is out of order: {list(zip(isolation_order, isolation_positions))}")
+    raise SystemExit(
+        f"overlay non-raising failure isolation is out of order: "
+        f"{list(zip(isolation_order, isolation_positions))}"
+    )
+
+validate_start = session.index("      def validate_install!\n")
+validate_end = session.index("\n      end", validate_start)
+validate = session[validate_start:validate_end]
+validate_order = ["verify_base_generation!", "raise_transaction_failure!"]
+validate_positions = [validate.index(fragment) for fragment in validate_order]
+if validate_positions != sorted(validate_positions):
+    raise SystemExit(
+        f"overlay package validation is out of order: "
+        f"{list(zip(validate_order, validate_positions))}"
+    )
 PY
 
 printf 'overlay commit boundary test: PASS\n'
