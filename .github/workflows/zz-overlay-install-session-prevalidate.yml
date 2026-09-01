@@ -1,0 +1,142 @@
+name: Prevalidate overlay install session refactor
+
+on:
+  push:
+    branches:
+      - refactor/overlay-maintainability
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'Prevalidate overlay install session refactor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out work branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refactor/overlay-maintainability
+          fetch-depth: 0
+
+      - name: Repair and validate the refactor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          from textwrap import dedent, indent
+
+          session_path = Path("Library/Homebrew/overlay/install_session.rb")
+          session = session_path.read_text(encoding="utf-8")
+          old_error = '''        raise TransactionFailure,
+                "#{formula_full_name} failed before its private keg was committed; "                       "uncommitted package state was discarded"
+          '''
+          new_error = '''        message = [
+            "#{formula_full_name} failed before its private keg was committed;",
+            "uncommitted package state was discarded",
+          ].join(" ")
+          raise TransactionFailure, message
+          '''
+          if session.count(old_error) != 1:
+              raise SystemExit(
+                  f"expected one malformed transaction error, found {session.count(old_error)}"
+              )
+          session_path.write_text(session.replace(old_error, new_error), encoding="utf-8")
+
+          spec_path = Path("Library/Homebrew/test/formula_installer_spec.rb")
+          spec = spec_path.read_text(encoding="utf-8")
+          describe_marker = '  describe "#finish" do\n'
+          next_test_marker = '    it "runs structured post-install work through the post-install subprocess" do\n'
+          start = spec.index(describe_marker) + len(describe_marker)
+          end = spec.index(next_test_marker, start)
+          replacement = "\n" + indent(
+              dedent(
+                  '''\
+                  it "aborts and closes the overlay session when publication validation fails" do
+                    formula = formula "overlay-generation-race" do
+                      T.bind(self, T.class_of(Formula))
+                      url "foo-1.0"
+                    end
+                    error = Homebrew::Overlay::BaseGenerationChangedError.new("a" * 64, "b" * 64)
+                    session = instance_double(Homebrew::Overlay::InstallSession)
+
+                    allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+                    installer = described_class.new(formula)
+                    allow(installer).to receive_messages(only_deps?: false, unlock: nil, verbose?: false)
+
+                    expect(session).to receive(:publish!).ordered.and_raise(error)
+                    expect(session).to receive(:abort!).ordered
+                    expect(session).to receive(:close!).ordered
+
+                    expect { installer.finish }.to raise_error(error)
+                  end
+
+                  it "commits an overlay replacement before native link side effects" do
+                    formula = formula "overlay-commit-boundary" do
+                      T.bind(self, T.class_of(Formula))
+                      url "foo-1.0"
+                    end
+                    keg = instance_double(Keg)
+                    session = instance_double(Homebrew::Overlay::InstallSession)
+
+                    allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+                    installer = described_class.new(formula)
+                    allow(Keg).to receive(:new).with(formula.prefix).and_return(keg)
+                    allow(installer).to receive_messages(
+                      fix_dynamic_linkage: nil,
+                      only_deps?:          false,
+                      unlock:              nil,
+                      verbose?:            false,
+                    )
+
+                    expect(session).to receive(:publish!).ordered
+                    expect(session).to receive(:managed?).ordered.and_return(true)
+                    expect(installer).to receive(:fix_dynamic_linkage).with(keg).ordered
+                    expect(session).to receive(:commit!).with(keg).ordered
+                    expect(installer).to receive(:link).with(keg).ordered.and_raise("link failed")
+                    expect(session).to receive(:abort!).ordered
+                    expect(session).to receive(:close!).ordered
+
+                    expect { installer.finish }.to raise_error("link failed")
+                  end
+
+                  '''
+              ),
+              "    ",
+          )
+          spec_path.write_text(spec[:start] + replacement + spec[end:], encoding="utf-8")
+          PY
+
+          bin/brew style --fix \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/formula_installer_spec.rb \
+            Library/Homebrew/test/overlay/install_session_spec.rb
+
+          git diff --check
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          bin/brew style \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/formula_installer_spec.rb \
+            Library/Homebrew/test/overlay/install_session_spec.rb
+          bin/brew typecheck
+          bin/brew tests --no-parallel --only=formula_installer,overlay/install_session
+
+          git rm .github/workflows/zz-overlay-install-session-prevalidate.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/overlay.rb \
+            Library/Homebrew/overlay/README.md \
+            Library/Homebrew/overlay/install_session.rb \
+            Library/Homebrew/test/formula_installer_spec.rb \
+            Library/Homebrew/test/overlay/install_session_spec.rb \
+            Library/Homebrew/test/support/overlay_architecture_test.sh
+          git commit -m "Validate overlay install session boundary"
+          git push origin HEAD:refactor/overlay-maintainability
