@@ -1,0 +1,52 @@
+name: Retry clean overlay install session candidate
+
+on:
+  push:
+    branches:
+      - refactor/overlay-maintainability
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.event.head_commit.message == 'Retry clean overlay install session candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out disposable work branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refactor/overlay-maintainability
+          fetch-depth: 0
+
+      - name: Execute the reviewed generator with forced clean checkout
+        shell: bash
+        env:
+          BASE_SHA: c45f65b1a7840d5b6996088e7c63747f33868219
+          CANDIDATE_BRANCH: automation/overlay-install-session-generated
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              ".github/workflows/zz-overlay-install-session-final.yml"
+          ).read_text(encoding="utf-8")
+          marker = "        run: |\n"
+          start = source.index(marker) + len(marker)
+          lines = source[start:].splitlines()
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in lines
+          ) + "\n"
+          old = 'git checkout --detach "${clean_commit}"'
+          new = 'git checkout --detach --force "${clean_commit}"'
+          if script.count(old) != 1:
+              raise SystemExit(f"expected one clean checkout command, found {script.count(old)}")
+          Path("/tmp/generate-clean-overlay-candidate.sh").write_text(
+              script.replace(old, new),
+              encoding="utf-8",
+          )
+          PY
+          bash /tmp/generate-clean-overlay-candidate.sh
