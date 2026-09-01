@@ -1,0 +1,57 @@
+name: Retry corrected overlay review follow-up source
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-followup-work
+
+permissions:
+  contents: write
+
+jobs:
+  correct:
+    if: github.event.head_commit.message == 'Retry corrected overlay review follow-up source'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out generator branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-review-followup-work
+          fetch-depth: 0
+
+      - name: Run position-corrected style workflow
+        shell: bash
+        env:
+          BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
+          CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
+        run: |
+          set -euo pipefail
+          git cat-file blob 27292f7979afbadd35ff294a718402ca9be7e747 > /tmp/style-workflow.yml
+          python3 <<'PY'
+          from pathlib import Path
+
+          source = Path('/tmp/style-workflow.yml').read_text(encoding='utf-8')
+          marker = '        run: |\n'
+          start = source.index(marker) + len(marker)
+          lines = source[start:].splitlines()
+          script = '\n'.join(
+              line[10:] if line.startswith('          ') else line
+              for line in lines
+          ) + '\n'
+
+          label = '    "committed restore guard spacing",\n)\n'
+          label_end = script.index(label) + len(label)
+          block_start = script.rfind('core = replace_once(\n', 0, label_end)
+          if block_start < 0:
+              raise SystemExit('missing committed restore spacing block')
+          replacement = (
+              'restore_method_start = core.index(restore_start)\n'
+              'prepare_position = core.index("        prepare_final_rack!\\n", restore_method_start)\n'
+              'if core[prepare_position - 2:prepare_position] != "\\n\\n":\n'
+              '    core = core[:prepare_position] + "\\n" + core[prepare_position:]\n'
+          )
+          script = script[:block_start] + replacement + script[label_end:]
+          Path('/tmp/style-correct.sh').write_text(script, encoding='utf-8')
+          PY
+          bash /tmp/style-correct.sh
