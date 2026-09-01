@@ -7,6 +7,7 @@ ruby_loader="${repo}/Library/Homebrew/overlay.rb"
 ruby_impl="${repo}/Library/Homebrew/overlay"
 shell_loader="${repo}/Library/Homebrew/utils/overlay.sh"
 shell_impl="${repo}/Library/Homebrew/utils/overlay"
+reinstall_adapter="${repo}/Library/Homebrew/reinstall/reinstall.rb"
 
 [[ "$(wc -l <"${ruby_loader}")" -le 15 ]] || {
   echo "Error: public Ruby overlay loader accumulated implementation" >&2
@@ -21,10 +22,25 @@ grep -Fx 'require "overlay/core"' "${ruby_loader}" >/dev/null || {
   echo "Error: public Ruby overlay loader no longer loads overlay/core" >&2
   exit 1
 }
+grep -Fx 'require "overlay/reinstall_session"' "${ruby_loader}" >/dev/null || {
+  echo "Error: public Ruby overlay loader no longer loads the reinstall session" >&2
+  exit 1
+}
 grep -F 'overlay/core.sh' "${shell_loader}" >/dev/null || {
   echo "Error: public shell overlay loader no longer loads overlay/core.sh" >&2
   exit 1
 }
+
+grep -F 'Homebrew::Overlay::ReinstallSession.build' "${reinstall_adapter}" >/dev/null || {
+  echo "Error: reinstall no longer delegates through the overlay session" >&2
+  exit 1
+}
+if grep -Eq 'Homebrew::Overlay::(ReinstallBackup|inherited_keg\?|mutation_active\?|begin_mutation!|sync!)' \
+  "${reinstall_adapter}"
+then
+  echo "Error: overlay reinstall policy leaked back into the upstream-facing adapter" >&2
+  exit 1
+fi
 
 while IFS= read -r file
 do

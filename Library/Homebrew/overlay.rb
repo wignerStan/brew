@@ -7,3 +7,4 @@
 # `overlay/` so they can be reorganized without widening Homebrew's rebase
 # surface.
 require "overlay/core"
+require "overlay/reinstall_session"

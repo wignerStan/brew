@@ -32,6 +32,12 @@ of retaining broad Homebrew objects.
 - Compare rewritten patch stacks with `git range-diff` after every upstream
   rebase.
 
-`core.rb` currently contains the existing implementation unchanged. It is an
-intermediate compatibility location; later commits can extract focused files
-behind the stable loader without changing callers.
+## Current extraction state
+
+- `core.rb` contains the original subsystem implementation unchanged.
+- `reinstall_session.rb` owns inherited/private reinstall preparation,
+  rollback, and commit policy; `reinstall/reinstall.rb` now keeps native backup
+  behavior and delegates through one overlay session.
+
+Continue extracting focused files behind the stable loader without changing
+callers or durable state formats.
