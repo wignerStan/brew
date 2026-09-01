@@ -1,0 +1,325 @@
+name: Apply exact overlay review follow-up source corrections
+
+on:
+  push:
+    branches:
+      - automation/overlay-review-followup-work
+
+permissions:
+  contents: write
+
+jobs:
+  correct:
+    if: github.event.head_commit.message == 'Apply exact overlay review follow-up source corrections'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact source candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-review-followup-candidate
+          fetch-depth: 0
+
+      - name: Rewrite only newly added source sections and validate
+        shell: bash
+        env:
+          BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
+          CANDIDATE_BRANCH: automation/overlay-review-followup-candidate
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          def render(lines):
+              return "\n".join(lines) + "\n"
+
+          def replace_section(source, start_marker, end_marker, replacement, label):
+              start = source.index(start_marker)
+              end = source.index(end_marker, start)
+              if source.find(start_marker, start + 1) != -1:
+                  raise SystemExit(f"{label}: duplicate start marker")
+              return source[:start] + replacement + source[end:]
+
+          def replace_once(source, old, new, label):
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return source.replace(old, new, 1)
+
+          core_path = Path("Library/Homebrew/overlay/core.rb")
+          core = core_path.read_text(encoding="utf-8")
+
+          mark_start = "      sig { params(keg_path: Pathname).void }\n      def mark_committed!(keg_path)\n"
+          committed_start = "      sig { returns(T::Boolean) }\n      def committed_replacement?\n"
+          mark_method = render([
+              "      sig { params(keg_path: Pathname).void }",
+              "      def mark_committed!(keg_path)",
+              "        state = validate_control_state!",
+              "        return if state == \"committed\" && committed_replacement?",
+              "        if state != \"backed-up\"",
+              "          raise TransactionFailure, \"overlay reinstall cannot commit from state #{state.inspect}: #{@root}\"",
+              "        end",
+              "",
+              "        candidate = keg_path.expand_path",
+              "        replacement_available =",
+              "          candidate == @final_version &&",
+              "          Overlay.local_keg_realization?(formula_name, version)",
+              "        unless replacement_available",
+              "          raise TransactionFailure, \"overlay reinstall replacement is unavailable: #{candidate}\"",
+              "        end",
+              "",
+              "        replacement_stat = candidate.lstat",
+              "        safe_replacement = replacement_stat.directory? && replacement_stat.uid == Process.uid",
+              "        raise TransactionFailure, \"unsafe overlay reinstall replacement: #{candidate}\" unless safe_replacement",
+              "",
+              "        marker = candidate/BASE_GENERATION_MARKER",
+              "        contents = Overlay.read_owned_file(",
+              "          marker,",
+              "          description: \"administrator base-generation marker\",",
+              "          max_bytes:   65,",
+              "        )",
+              "        if contents.nil?",
+              "          raise TransactionFailure, \"overlay reinstall replacement has no base-generation marker: #{candidate}\"",
+              "        end",
+              "",
+              "        generation = contents.chomp",
+              "        Overlay.validate_base_generation!(generation)",
+              "        if contents != \"#{generation}\\n\"",
+              "          raise TransactionFailure, \"invalid overlay reinstall base-generation marker: #{marker}\"",
+              "        end",
+              "",
+              "        Overlay.durable_atomic_write!(@metadata_base_generation, \"#{generation}\\n\", mode: 0600)",
+              "        Overlay.durable_atomic_write!(@metadata_replacement_device, \"#{replacement_stat.dev}\\n\", mode: 0600)",
+              "        Overlay.durable_atomic_write!(@metadata_replacement_inode, \"#{replacement_stat.ino}\\n\", mode: 0600)",
+              "        Overlay.durable_atomic_write!(@metadata_state, \"committed\\n\", mode: 0600)",
+              "        Overlay.fsync_directory!(@root)",
+              "      end",
+              "",
+          ])
+          core = replace_section(core, mark_start, committed_start, mark_method, "mark_committed")
+
+          restore_start = "      sig { void }\n      def restore!\n"
+          committed_method = render([
+              "      sig { returns(T::Boolean) }",
+              "      def committed_replacement?",
+              "        state = Overlay.read_owned_file(",
+              "          @metadata_state,",
+              "          description: \"overlay reinstall state\",",
+              "          max_bytes:   32,",
+              "        )",
+              "        return false if state != \"committed\\n\"",
+              "",
+              "        generation = Overlay.read_owned_file(",
+              "          @metadata_base_generation,",
+              "          description: \"overlay reinstall committed base generation\",",
+              "          max_bytes:   65,",
+              "        )",
+              "        device = Overlay.read_owned_file(",
+              "          @metadata_replacement_device,",
+              "          description: \"overlay reinstall committed device\",",
+              "          max_bytes:   32,",
+              "        )",
+              "        inode = Overlay.read_owned_file(",
+              "          @metadata_replacement_inode,",
+              "          description: \"overlay reinstall committed inode\",",
+              "          max_bytes:   32,",
+              "        )",
+              "        complete_metadata =",
+              "          generation&.match?(/\\A[0-9a-f]{64}\\n\\z/) &&",
+              "          device&.match?(/\\A[0-9]+\\n\\z/) &&",
+              "          inode&.match?(/\\A[0-9]+\\n\\z/)",
+              "        unless complete_metadata",
+              "          raise TransactionFailure, \"incomplete committed overlay reinstall metadata: #{@root}\"",
+              "        end",
+              "",
+              "        recorded_generation = T.must(generation).chomp",
+              "        Overlay.validate_base_generation!(recorded_generation)",
+              "        unless Overlay.local_keg_realization?(formula_name, version)",
+              "          raise TransactionFailure, \"committed overlay reinstall replacement is missing: #{@final_version}\"",
+              "        end",
+              "",
+              "        replacement_stat = @final_version.lstat",
+              "        expected_identity = [T.must(device).to_i, T.must(inode).to_i]",
+              "        actual_identity = [replacement_stat.dev, replacement_stat.ino]",
+              "        if actual_identity != expected_identity",
+              "          raise TransactionFailure, \"committed overlay reinstall replacement changed: #{@final_version}\"",
+              "        end",
+              "",
+              "        marker = @final_version/BASE_GENERATION_MARKER",
+              "        if marker.exist? || marker.symlink?",
+              "          contents = Overlay.read_owned_file(",
+              "            marker,",
+              "            description: \"administrator base-generation marker\",",
+              "            max_bytes:   65,",
+              "          )",
+              "          if contents != \"#{recorded_generation}\\n\"",
+              "            raise TransactionFailure, \"committed overlay reinstall marker changed: #{marker}\"",
+              "          end",
+              "        end",
+              "        true",
+              "      end",
+              "",
+          ])
+          core = replace_section(core, committed_start, restore_start, committed_method, "committed_replacement")
+
+          restore_guard = render([
+              "        state = validate_control_state!",
+              "        if state == \"committed\"",
+              "          raise TransactionFailure, \"refusing to restore a committed overlay reinstall: #{@root}\"",
+              "        end",
+              "        prepare_final_rack!",
+          ])
+          restore_guard_with_space = restore_guard.replace("        end\n        prepare_final_rack!", "        end\n\n        prepare_final_rack!")
+          core = replace_once(core, restore_guard, restore_guard_with_space, "restore guard spacing")
+
+          cleanup_start = "      sig { void }\n      def cleanup_control_root!\n"
+          cleanup_end = "    end\n\n    private_constant :TRANSACTION_MARKER, :BASE_GENERATION_PATTERN\n"
+          cleanup_method = render([
+              "      sig { void }",
+              "      def cleanup_control_root!",
+              "        managed_root = @root.exist? || @root.symlink?",
+              "        unless managed_root",
+              "          Overlay.unregister_reinstall_backup(self)",
+              "          return",
+              "        end",
+              "",
+              "        root_stat = @root.lstat",
+              "        safe_root = root_stat.directory? && !@root.symlink? && root_stat.uid == Process.uid",
+              "        raise TransactionFailure, \"unsafe overlay reinstall control path: #{@root}\" unless safe_root",
+              "",
+              "        Overlay.remove_tree_durable!(",
+              "          @root,",
+              "          expected_device: root_stat.dev,",
+              "          expected_inode:  root_stat.ino,",
+              "        )",
+              "      ensure",
+              "        control_root_removed = !@root.exist? && !@root.symlink?",
+              "        Overlay.unregister_reinstall_backup(self) if control_root_removed",
+              "      end",
+          ])
+          core = replace_section(core, cleanup_start, cleanup_end, cleanup_method, "cleanup_control_root")
+
+          helper_start = "    sig {\n      params(\n        path: Pathname,\n        expected_device: T.nilable(Integer),\n        expected_inode: T.nilable(Integer),\n      ).void\n    }\n    def self.remove_tree_durable!(path, expected_device: nil, expected_inode: nil)\n"
+          inherited_sig = "    sig { params(path: T.any(Pathname, String)).returns(T::Boolean) }\n"
+          helper = render([
+              "    sig {",
+              "      params(",
+              "        path:            Pathname,",
+              "        expected_device: T.nilable(Integer),",
+              "        expected_inode:  T.nilable(Integer),",
+              "      ).void",
+              "    }",
+              "    def self.remove_tree_durable!(path, expected_device: nil, expected_inode: nil)",
+              "      path = path.expand_path",
+              "      path_present = path.exist? || path.symlink?",
+              "      return unless path_present",
+              "",
+              "      parent = path.parent",
+              "      parent_stat = parent.lstat",
+              "      path_stat = path.lstat",
+              "      expected_identity = if expected_device.nil? && expected_inode.nil?",
+              "        true",
+              "      elsif expected_device && expected_inode",
+              "        path_stat.dev == expected_device && path_stat.ino == expected_inode",
+              "      else",
+              "        false",
+              "      end",
+              "      safe_path =",
+              "        parent_stat.directory? &&",
+              "        !parent.symlink? &&",
+              "        parent_stat.uid == Process.uid &&",
+              "        path_stat.directory? &&",
+              "        !path.symlink? &&",
+              "        path_stat.uid == Process.uid &&",
+              "        expected_identity",
+              "      raise TransactionFailure, \"unsafe overlay cleanup path: #{path}\" unless safe_path",
+              "",
+              "      tombstone = T.let(nil, T.nilable(Pathname))",
+              "      32.times do",
+              "        candidate = parent/\".cleanup-#{path.basename}-#{SecureRandom.hex(8)}\"",
+              "        next if candidate.exist? || candidate.symlink?",
+              "",
+              "        begin",
+              "          File.rename(path, candidate)",
+              "        rescue Errno::EEXIST",
+              "          next",
+              "        end",
+              "        tombstone = candidate",
+              "        break",
+              "      end",
+              "      detached = !tombstone.nil? && !path.exist? && !path.symlink?",
+              "      raise TransactionFailure, \"could not detach overlay cleanup path: #{path}\" unless detached",
+              "",
+              "      detached_path = T.must(tombstone)",
+              "      fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)",
+              "      detached_stat = detached_path.lstat",
+              "      stable_detach =",
+              "        detached_stat.directory? &&",
+              "        detached_stat.uid == path_stat.uid &&",
+              "        detached_stat.dev == path_stat.dev &&",
+              "        detached_stat.ino == path_stat.ino",
+              "      raise TransactionFailure, \"overlay cleanup path changed while detaching: #{path}\" unless stable_detach",
+              "",
+              "      FileUtils.rm_rf(detached_path)",
+              "      removed = !detached_path.exist? && !detached_path.symlink?",
+              "      raise TransactionFailure, \"could not remove detached overlay cleanup path: #{detached_path}\" unless removed",
+              "",
+              "      fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)",
+              "    rescue TransactionFailure",
+              "      raise",
+              "    rescue SystemCallError, IOError => e",
+              "      raise TransactionFailure, \"could not durably remove overlay tree #{path}: #{e.message}\"",
+              "    end",
+              "",
+          ])
+          core = replace_section(core, helper_start, inherited_sig, helper, "remove_tree_durable")
+
+          core = replace_once(
+              core,
+              "        sig { params(backup: ReinstallBackup).void }\n    def self.register_reinstall_backup(backup)\n",
+              "    sig { params(backup: ReinstallBackup).void }\n    def self.register_reinstall_backup(backup)\n",
+              "registry indentation",
+          )
+          registry_tail = render([
+              "      if existing && existing != backup",
+              "        raise TransactionFailure, \"another overlay reinstall backup is active for #{backup.formula_name}\"",
+              "      end",
+              "      @reinstall_backups[key] = backup",
+          ])
+          core = replace_once(
+              core,
+              registry_tail,
+              registry_tail.replace("      end\n      @reinstall", "      end\n\n      @reinstall"),
+              "registry spacing",
+          )
+          core_path.write_text(core, encoding="utf-8")
+
+          spec_path = Path("Library/Homebrew/test/overlay/core_spec.rb")
+          spec = spec_path.read_text(encoding="utf-8")
+          spec = spec.replace(
+              '  end\n\n\n  it "rejects an overlay-managed record whose final target escapes the base Cellar" do\n',
+              '  end\n\n  it "rejects an overlay-managed record whose final target escapes the base Cellar" do\n',
+              1,
+          )
+          spec_path.write_text(spec, encoding="utf-8")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Library/Homebrew/overlay/core.rb Library/Homebrew/test/overlay/core_spec.rb
+          git commit --amend --no-edit
+
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" -eq 1
+          test -z "$(git rev-list --merges "${BASE_SHA}..HEAD")"
+          git diff --check "${BASE_SHA}...HEAD"
+          bash Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_transaction_recovery_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${BASE_SHA}" HEAD
+          bin/brew typecheck
+          bin/brew tests --no-parallel \
+            --only=overlay/core,overlay/install_session,overlay/reinstall_session,overlay/reinstall_backup,formula_installer
+
+          git push --force origin "HEAD:refs/heads/${CANDIDATE_BRANCH}"
+          printf 'source_candidate=%s\n' "$(git rev-parse HEAD)"
