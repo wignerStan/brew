@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'Prevalidate overlay install session refactor'
+    if: github.event.head_commit.message == 'Prevalidate overlay install session refactor retry'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -30,20 +30,17 @@ jobs:
 
           session_path = Path("Library/Homebrew/overlay/install_session.rb")
           session = session_path.read_text(encoding="utf-8")
-          old_error = '''        raise TransactionFailure,
-                "#{formula_full_name} failed before its private keg was committed; "                       "uncommitted package state was discarded"
-          '''
+          method = session.index("      def raise_transaction_failure!\n")
+          start = session.index("        raise TransactionFailure,\n", method)
+          end_marker = "\n      end\n\n      sig { void }\n      def rollback_uncommitted_local_keg!"
+          end = session.index(end_marker, start)
           new_error = '''        message = [
             "#{formula_full_name} failed before its private keg was committed;",
             "uncommitted package state was discarded",
           ].join(" ")
           raise TransactionFailure, message
           '''
-          if session.count(old_error) != 1:
-              raise SystemExit(
-                  f"expected one malformed transaction error, found {session.count(old_error)}"
-              )
-          session_path.write_text(session.replace(old_error, new_error), encoding="utf-8")
+          session_path.write_text(session[:start] + new_error + session[end:], encoding="utf-8")
 
           spec_path = Path("Library/Homebrew/test/formula_installer_spec.rb")
           spec = spec_path.read_text(encoding="utf-8")
