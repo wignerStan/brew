@@ -91,7 +91,9 @@ test ! -e "${live}"
 
 # Keep static coverage on the Ruby integration even when the target Homebrew
 # development gems are unavailable to this offline shell test.
-python3 - "${repo}/Library/Homebrew/reinstall/reinstall.rb" "${repo}/Library/Homebrew/overlay.rb" <<'PY'
+python3 \
+  - "${repo}/Library/Homebrew/reinstall/reinstall.rb" \
+  "${repo}/Library/Homebrew/overlay/core.rb" <<'PY'
 from pathlib import Path
 import sys
 

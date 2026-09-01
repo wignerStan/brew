@@ -96,7 +96,7 @@ ln -s "${exact}/base/Cellar/foo/2.0" "${exact}/user/Cellar/foo/2.0"
 homebrew-overlay-rack-is-exact-inherited-view \
   "${exact}/base/Cellar/foo" "${exact}/user/Cellar/foo"
 
-python3 - "${repo}/Library/Homebrew/utils/overlay.sh" <<'PY'
+python3 - "${repo}/Library/Homebrew/utils/overlay/core.sh" <<'PY'
 from pathlib import Path
 import sys
 

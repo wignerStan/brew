@@ -111,7 +111,9 @@ cmp -s "${work}/warned-peer" "${work}/warned-contents"
 
 # Source guards ensure every authoritative reader uses the descriptor helper,
 # including Ruby's diagnostic traversal of local base-generation markers.
-python3 - "${repo}/Library/Homebrew/utils/overlay.sh" "${repo}/Library/Homebrew/overlay.rb" <<'PY'
+python3 \
+  - "${repo}/Library/Homebrew/utils/overlay/core.sh" \
+  "${repo}/Library/Homebrew/overlay/core.rb" <<'PY'
 from pathlib import Path
 import sys
 

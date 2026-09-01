@@ -33,7 +33,7 @@ finally:
     os.close(fd)
 PY
 
-python3 - "${repo}/Library/Homebrew/overlay.rb" <<'PY'
+python3 - "${repo}/Library/Homebrew/overlay/core.rb" <<'PY'
 from pathlib import Path
 import sys
 

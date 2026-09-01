@@ -309,7 +309,7 @@ test -d "${case7}/user/Cellar/foo/2.0"
 test -d "${case7}/user/var/homebrew/overlay/transactions/txn-generation"
 grep -q 'wrong base generation' "${case7}/stderr"
 
-python3 - "${repo}/Library/Homebrew/overlay.rb" <<'PY_ORDER'
+python3 - "${repo}/Library/Homebrew/overlay/core.rb" <<'PY_ORDER'
 from pathlib import Path
 import sys
 

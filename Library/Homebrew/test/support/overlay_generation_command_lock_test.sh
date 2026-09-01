@@ -5,6 +5,7 @@ set -euo pipefail
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
 script="${repo}/Library/Homebrew/utils/overlay.sh"
+implementation="${repo}/Library/Homebrew/utils/overlay/core.sh"
 # shellcheck source=../../utils/overlay.sh
 source "${script}"
 
@@ -60,7 +61,7 @@ test -f "${dirty}"
 bash "${script}" --recover-generation "${prefix}" >/dev/null
 test ! -e "${dirty}"
 
-python3 - "${script}" <<'PY'
+python3 - "${implementation}" <<'PY'
 from pathlib import Path
 import sys
 
