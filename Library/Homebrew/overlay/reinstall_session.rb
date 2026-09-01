@@ -7,8 +7,6 @@ module Homebrew
     # backup behavior stays in Reinstall; this object handles only inherited and
     # private overlay kegs so the upstream-facing method has one narrow seam.
     class ReinstallSession
-      extend T::Sig
-
       sig {
         params(
           keg:      T.untyped,
@@ -17,16 +15,17 @@ module Homebrew
         ).returns(T.nilable(ReinstallSession))
       }
       def self.build(keg, link_keg:, verbose:)
-        return unless Overlay.active? && keg
+        return unless Overlay.active?
+        return if keg.nil?
 
         new(keg, link_keg:, verbose:)
       end
 
       sig { params(keg: T.untyped, link_keg: T::Boolean, verbose: T::Boolean).void }
       def initialize(keg, link_keg:, verbose:)
-        @keg = T.let(keg, T.untyped)
-        @link_keg = T.let(link_keg, T::Boolean)
-        @verbose = T.let(verbose, T::Boolean)
+        @keg = keg
+        @link_keg = link_keg
+        @verbose = verbose
         @inherited = T.let(Overlay.inherited_keg?(@keg.to_path), T::Boolean)
         @backup = T.let(nil, T.nilable(ReinstallBackup))
         @mutation_started = T.let(false, T::Boolean)

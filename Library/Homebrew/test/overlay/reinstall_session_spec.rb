@@ -9,8 +9,10 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
   let(:keg) { instance_double(Keg, to_path: keg_path.to_s) }
 
   before do
-    allow(Homebrew::Overlay).to receive(:active?).and_return(true)
-    allow(Homebrew::Overlay).to receive(:inherited_keg?).and_return(false)
+    allow(Homebrew::Overlay).to receive_messages(
+      active?:        true,
+      inherited_keg?: false,
+    )
   end
 
   it "does not intercept native or empty reinstall targets" do
