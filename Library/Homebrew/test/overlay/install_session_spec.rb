@@ -56,7 +56,7 @@ RSpec.describe Homebrew::Overlay::InstallSession do
     session = described_class.new
     session.start!(formula)
 
-    expect(session).to be_managed
+    expect(session.managed?).to be(true)
     expect(session.build_environment).to eq(
       "HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID" => "123",
     )
@@ -204,7 +204,7 @@ RSpec.describe Homebrew::Overlay::InstallSession do
     session = described_class.new
     session.start!(formula)
 
-    expect(session).not_to be_managed
+    expect(session.managed?).to be(false)
     expect(Homebrew::Overlay).to receive(:bump_generation!)
     session.complete_native_install!
   end
