@@ -1,26 +1,26 @@
-name: Retry clean overlay install session candidate
+name: Generate repaired overlay install session candidate
 
 on:
   push:
     branches:
-      - refactor/overlay-maintainability
+      - automation/overlay-install-session-repair
 
 permissions:
   contents: write
 
 jobs:
   generate:
-    if: github.event.head_commit.message == 'Retry clean overlay install session candidate'
+    if: github.event.head_commit.message == 'Generate repaired overlay install session candidate'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out disposable work branch
+      - name: Check out disposable repair branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: refactor/overlay-maintainability
+          ref: automation/overlay-install-session-repair
           fetch-depth: 0
 
-      - name: Execute the reviewed generator with forced clean checkout
+      - name: Execute the reviewed generator with the repaired matrix guard
         shell: bash
         env:
           BASE_SHA: c45f65b1a7840d5b6996088e7c63747f33868219
@@ -41,14 +41,23 @@ jobs:
               for line in lines
           ) + "\n"
 
-          old = 'git checkout --detach "${clean_commit}"'
-          new = 'git checkout --detach --force "${clean_commit}"'
-          if script.count(old) != 1:
-              raise SystemExit(
-                  f"expected one clean checkout command, found {script.count(old)}"
-              )
+          replacements = {
+              'git checkout --detach "${clean_commit}"':
+                  'git checkout --detach --force "${clean_commit}"',
+              "  Library/Homebrew/test/support/overlay_architecture_test.sh\n)": (
+                  "  Library/Homebrew/test/support/overlay_architecture_test.sh\n"
+                  "  Library/Homebrew/test/support/overlay_install_failure_test.sh\n)"
+              ),
+          }
+          for old, new in replacements.items():
+              if script.count(old) != 1:
+                  raise SystemExit(
+                      f"expected one generator fragment {old!r}, found {script.count(old)}"
+                  )
+              script = script.replace(old, new)
+
           Path("/tmp/generate-clean-overlay-candidate.sh").write_text(
-              script.replace(old, new),
+              script,
               encoding="utf-8",
           )
           PY
