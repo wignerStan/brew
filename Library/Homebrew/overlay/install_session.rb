@@ -96,7 +96,7 @@ module Homebrew
 
       sig { void }
       def complete_native_install!
-        return if managed?
+        return if managed? || !@mutation_owned
 
         Overlay.bump_generation!
         @mutation_owned = false
