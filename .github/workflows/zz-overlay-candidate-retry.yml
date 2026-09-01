@@ -20,7 +20,7 @@ jobs:
           ref: automation/overlay-install-session-repair
           fetch-depth: 0
 
-      - name: Execute the reviewed generator with the repaired matrix guard
+      - name: Execute the reviewed generator with the repaired matrix guards
         shell: bash
         env:
           BASE_SHA: c45f65b1a7840d5b6996088e7c63747f33868219
@@ -46,6 +46,7 @@ jobs:
                   'git checkout --detach --force "${clean_commit}"',
               "  Library/Homebrew/test/support/overlay_architecture_test.sh\n)": (
                   "  Library/Homebrew/test/support/overlay_architecture_test.sh\n"
+                  "  Library/Homebrew/test/support/overlay_commit_boundary_test.sh\n"
                   "  Library/Homebrew/test/support/overlay_install_failure_test.sh\n)"
               ),
           }
