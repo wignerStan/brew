@@ -36,6 +36,12 @@ jobs:
               line[10:] if line.startswith('          ') else line
               for line in lines
           ) + '\n'
+          opening = "python3 <<'PY'\n"
+          closing = "\nPY\n\nchmod +x"
+          if script.count(opening) != 1 or script.count(closing) != 1:
+              raise SystemExit('unexpected generator heredoc shape')
+          script = script.replace(opening, "python3 <<'PY_GENERATOR'\n", 1)
+          script = script.replace(closing, "\nPY_GENERATOR\n\nchmod +x", 1)
           Path('/tmp/overlay-review-followup-generator.sh').write_text(script, encoding='utf-8')
           PY
           bash /tmp/overlay-review-followup-generator.sh
