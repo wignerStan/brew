@@ -30,6 +30,7 @@ while IFS= read -r file
 do
   case "${file}" in
     "${ruby_loader}" | "${ruby_impl}"/*) continue ;;
+    *) ;;
   esac
   if grep -Eq 'require[[:space:]]+"overlay/' "${file}"
   then
@@ -42,6 +43,7 @@ while IFS= read -r file
 do
   case "${file}" in
     "${shell_loader}" | "${shell_impl}"/* | "${repo}/Library/Homebrew/test/"*) continue ;;
+    *) ;;
   esac
   if grep -Fq 'overlay/core.sh' "${file}"
   then
