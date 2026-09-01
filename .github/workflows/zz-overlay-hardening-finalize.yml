@@ -57,21 +57,6 @@ jobs:
           if source.count(event_literal) != 2:
               raise SystemExit('generator event literals did not match')
           source = source.replace(event_literal, '        r"""      [:write, base_marker,')
-          alignment_old = '''      active?:                      false,
-              local_keg_realization?:       false,
-              mark_reinstall_committed!:    nil,
-              mutation_active?:             false,
-              release_base_mutation_lease:  nil,
-          '''
-          alignment_new = '''      active?:                     false,
-              local_keg_realization?:      false,
-              mark_reinstall_committed!:   nil,
-              mutation_active?:            false,
-              release_base_mutation_lease: nil,
-          '''
-          if alignment_old not in source:
-              raise SystemExit('generator alignment block did not match')
-          source = source.replace(alignment_old, alignment_new)
           path.write_text(source, encoding='utf-8')
           PY
 
@@ -81,6 +66,24 @@ jobs:
           git checkout --detach "${BASE_SHA}"
 
           python3 /tmp/generate_overlay_hardening.py recovery
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('Library/Homebrew/test/overlay/install_session_spec.rb')
+          source = path.read_text(encoding='utf-8')
+          replacements = {
+              '      active?:                      false,\n': '      active?:                     false,\n',
+              '      local_keg_realization?:       false,\n': '      local_keg_realization?:      false,\n',
+              '      mark_reinstall_committed!:    nil,\n': '      mark_reinstall_committed!:   nil,\n',
+              '      mutation_active?:             false,\n': '      mutation_active?:            false,\n',
+              '      release_base_mutation_lease:  nil,\n': '      release_base_mutation_lease: nil,\n',
+          }
+          for old, new in replacements.items():
+              if source.count(old) != 1:
+                  raise SystemExit(f'generated alignment line did not match: {old!r}')
+              source = source.replace(old, new)
+          path.write_text(source, encoding='utf-8')
+          PY
           chmod +x \
             Library/Homebrew/test/support/overlay_commit_boundary_test.sh \
             Library/Homebrew/test/support/overlay_rebase_workflow_test.sh \
