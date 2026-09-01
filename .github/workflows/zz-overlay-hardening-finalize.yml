@@ -57,6 +57,21 @@ jobs:
           if source.count(event_literal) != 2:
               raise SystemExit('generator event literals did not match')
           source = source.replace(event_literal, '        r"""      [:write, base_marker,')
+          alignment_old = '''      active?:                      false,
+              local_keg_realization?:       false,
+              mark_reinstall_committed!:    nil,
+              mutation_active?:             false,
+              release_base_mutation_lease:  nil,
+          '''
+          alignment_new = '''      active?:                     false,
+              local_keg_realization?:      false,
+              mark_reinstall_committed!:   nil,
+              mutation_active?:            false,
+              release_base_mutation_lease: nil,
+          '''
+          if alignment_old not in source:
+              raise SystemExit('generator alignment block did not match')
+          source = source.replace(alignment_old, alignment_new)
           path.write_text(source, encoding='utf-8')
           PY
 
