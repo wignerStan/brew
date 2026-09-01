@@ -66,12 +66,17 @@ jobs:
               '        (shift_continuation(old, 2), shift_continuation(new, 2), 2),\n'
               '        (shift_continuation(old, -2), shift_continuation(new, -2), -2),\n'
               '    ]\n'
-              '    matches = [variant for variant in variants if source.count(variant[0]) == 1]\n'
-              '    if len(matches) != 1:\n'
-              '        counts = {delta: source.count(candidate) for candidate, _, delta in variants}\n'
-              '        raise SystemExit(f"{label}: expected one match variant, found {counts}")\n'
-              '    candidate, replacement, _ = matches[0]\n'
-              '    return source.replace(candidate, replacement)\n'
+              '    counts = {}\n'
+              '    seen = set()\n'
+              '    for candidate, replacement, delta in variants:\n'
+              '        if candidate in seen:\n'
+              '            continue\n'
+              '        seen.add(candidate)\n'
+              '        count = source.count(candidate)\n'
+              '        counts[delta] = count\n'
+              '        if count == 1:\n'
+              '            return source.replace(candidate, replacement)\n'
+              '    raise SystemExit(f"{label}: expected one match variant, found {counts}")\n'
           )
           if script.count(old_helper) != 1:
               raise SystemExit('unexpected replacement helper shape')
