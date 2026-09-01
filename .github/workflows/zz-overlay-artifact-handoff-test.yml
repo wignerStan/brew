@@ -102,3 +102,51 @@ jobs:
           test "${sha}" = "${AFTER}"
           /usr/bin/git checkout --detach "${AFTER}"
           test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+
+  promote-simulation:
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Download the bundle with no repository permissions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: overlay-artifact-handoff-test
+          path: ${{ runner.temp }}/overlay-artifact-handoff-test
+
+      - name: Import the bundle in an empty isolated repository
+        shell: bash
+        env:
+          BEFORE: ${{ needs.prepare.outputs.before }}
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          isolated_home="$(mktemp -d)"
+          repository="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          trap 'rm -rf "${isolated_home}" "${repository}" "${template_dir}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+
+          bundle="${RUNNER_TEMP}/overlay-artifact-handoff-test/candidate.bundle"
+          test "$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')" = "${BUNDLE_SHA256}"
+
+          /usr/bin/git init "${repository}"
+          /usr/bin/git -C "${repository}" config core.hooksPath /dev/null
+          /usr/bin/git -C "${repository}" remote add source https://github.com/wignerStan/brew.git
+          GIT_TERMINAL_PROMPT=0 /usr/bin/git -C "${repository}" fetch --no-tags source \
+            "+${BEFORE}:refs/prerequisite"
+          test "$(/usr/bin/git -C "${repository}" rev-parse refs/prerequisite)" = "${BEFORE}"
+          /usr/bin/git -C "${repository}" bundle verify "${bundle}"
+          refs="$(/usr/bin/git -C "${repository}" bundle unbundle "${bundle}")"
+          sha="$(
+            printf '%s\n' "${refs}" |
+              /usr/bin/awk '$2 == "refs/overlay-bundle/candidate" { print $1 }'
+          )"
+          test "${sha}" = "${AFTER}"
+          test "$(/usr/bin/git -C "${repository}" rev-parse "${AFTER}^{tree}")" = "${EXPECTED_TREE}"
