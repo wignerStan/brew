@@ -148,36 +148,23 @@ RSpec.describe FormulaInstaller do
   end
 
   describe "#finish" do
-    it "discards an uncommitted local overlay keg when generation validation fails" do
+    it "aborts and closes the overlay session when publication validation fails" do
       formula = formula "overlay-generation-race" do
         T.bind(self, T.class_of(Formula))
         url "foo-1.0"
       end
-      installer = described_class.new(formula)
       error = Homebrew::Overlay::BaseGenerationChangedError.new("a" * 64, "b" * 64)
+      session = instance_double(Homebrew::Overlay::InstallSession)
 
-      allow(installer).to receive_messages(only_deps?: false, verbose?: false, unlock: nil)
-      allow(installer).to receive(:verify_overlay_base_generation!).and_raise(error)
-      expect(installer).to receive(:rollback_overlay_uncommitted_local_keg!)
+      allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+      installer = described_class.new(formula)
+      allow(installer).to receive_messages(only_deps?: false, unlock: nil, verbose?: false)
+
+      expect(session).to receive(:publish!).ordered.and_raise(error)
+      expect(session).to receive(:abort!).ordered
+      expect(session).to receive(:close!).ordered
 
       expect { installer.finish }.to raise_error(error)
-    end
-
-    it "raises on a non-raising local overlay failure before commit" do
-      formula = formula "overlay-local-failure" do
-        T.bind(self, T.class_of(Formula))
-        url "foo-1.0"
-      end
-      installer = described_class.new(formula)
-      installer.instance_variable_set(:@overlay_base_generation, "a" * 64)
-      allow(installer).to receive(:verify_overlay_base_generation!)
-      Homebrew.failed = true
-
-      expect do
-        installer.send(:raise_overlay_transaction_failure!)
-      end.to raise_error(Homebrew::Overlay::TransactionFailure, /uncommitted package state was discarded/)
-    ensure
-      Homebrew.failed = false
     end
 
     it "commits an overlay replacement before native link side effects" do
@@ -185,30 +172,26 @@ RSpec.describe FormulaInstaller do
         T.bind(self, T.class_of(Formula))
         url "foo-1.0"
       end
-      installer = described_class.new(formula)
-      keg = instance_double(Keg, tab: instance_double(Tab))
-      committed = false
-      transaction = instance_double(Homebrew::Overlay::FormulaTransaction)
+      keg = instance_double(Keg)
+      session = instance_double(Homebrew::Overlay::InstallSession)
 
-      installer.instance_variable_set(:@overlay_transaction, transaction)
-      allow(transaction).to receive(:finished?) { committed }
+      allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+      installer = described_class.new(formula)
       allow(Keg).to receive(:new).with(formula.prefix).and_return(keg)
       allow(installer).to receive_messages(
-        fix_dynamic_linkage:                 nil,
-        only_deps?:                          false,
-        rollback_overlay_uncommitted_local_keg!: nil,
-        unlock:                              nil,
-        verbose?:                            false,
-        verify_overlay_base_generation!:     nil,
+        fix_dynamic_linkage: nil,
+        only_deps?:          false,
+        unlock:              nil,
+        verbose?:            false,
       )
 
-      expect(transaction).to receive(:publish!).ordered
+      expect(session).to receive(:publish!).ordered
+      expect(session).to receive(:managed?).ordered.and_return(true)
       expect(installer).to receive(:fix_dynamic_linkage).with(keg).ordered
-      expect(transaction).to receive(:commit!).ordered do
-        committed = true
-      end
+      expect(session).to receive(:commit!).with(keg).ordered
       expect(installer).to receive(:link).with(keg).ordered.and_raise("link failed")
-      expect(transaction).not_to receive(:rollback!)
+      expect(session).to receive(:abort!).ordered
+      expect(session).to receive(:close!).ordered
 
       expect { installer.finish }.to raise_error("link failed")
     end

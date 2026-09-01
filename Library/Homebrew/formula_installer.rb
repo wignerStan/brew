@@ -150,16 +150,12 @@ class FormulaInstaller
     @api_bottle = T.let(nil, T.nilable(Bottle))
     @api_bottle_loaded = T.let(false, T::Boolean)
     @enqueued_bottle_download = T.let(nil, T.nilable(Downloadable))
-    @overlay_transaction = T.let(nil, T.nilable(Homebrew::Overlay::FormulaTransaction))
-    @overlay_base_generation = T.let(nil, T.nilable(String))
-    @overlay_local_keg_preexisting = T.let(false, T::Boolean)
-    @overlay_local_keg_committed = T.let(false, T::Boolean)
-    @overlay_mutation_owned = T.let(false, T::Boolean)
-    @overlay_previous_failed = T.let(nil, T.nilable(T::Boolean))
-    @overlay_base_mutation_lease = T.let(nil, T.nilable(File))
-
     # Take the original formula instance, which might have been swapped from an API instance to a source instance
     @formula = T.let(T.must(previously_fetched_formula), Formula) if previously_fetched_formula
+    @overlay_install_session = T.let(
+      Homebrew::Overlay::InstallSession.new,
+      Homebrew::Overlay::InstallSession,
+    )
 
     @ran_prelude_fetch_metadata = T.let(false, T::Boolean)
     @ran_prelude_fetch = T.let(false, T::Boolean)
@@ -592,29 +588,7 @@ class FormulaInstaller
 
     return if only_deps?
 
-    if Homebrew::Overlay.active?
-      @overlay_base_mutation_lease = Homebrew::Overlay.acquire_base_mutation_lease
-      @overlay_local_keg_preexisting = Homebrew::Overlay.local_keg_realization?(
-        formula.name,
-        formula.pkg_version.to_s,
-      )
-      @overlay_base_generation = Homebrew::Overlay.current_base_generation
-      @overlay_transaction = Homebrew::Overlay.begin_formula_transaction(
-        formula,
-        base_generation: @overlay_base_generation,
-      )
-      unless @overlay_transaction
-        Homebrew::Overlay.validate_local_install_target!(formula.name, formula.pkg_version.to_s)
-      end
-    end
-    if Homebrew::EnvConfig.overlay? && !Homebrew::Overlay.mutation_active?
-      Homebrew::Overlay.begin_mutation!
-      @overlay_mutation_owned = true
-    end
-    if @overlay_base_generation
-      @overlay_previous_failed = Homebrew.failed?
-      Homebrew.failed = false
-    end
+    @overlay_install_session.start!(formula)
 
     formula.deprecated_flags.each do |deprecated_option|
       old_flag = deprecated_option.old_flag
@@ -673,19 +647,15 @@ on_request: installed_on_request?, options:)
     build_bottle_postinstall if build_bottle?
 
     opoo "Nothing was installed to #{formula.prefix}" unless formula.latest_version_installed?
-    verify_overlay_base_generation!
-    raise_overlay_transaction_failure! if @overlay_base_generation
+    @overlay_install_session.validate_install!
     end_time = Time.now
     Homebrew.messages.package_installed(formula.name, end_time - start_time)
+  # Overlay rollback must also cover interrupts and process exits during installation.
   rescue Exception # rubocop:disable Lint/RescueException
     begin
-      transaction = @overlay_transaction
-      transaction.rollback! if transaction && !transaction.finished?
-      rollback_overlay_uncommitted_local_keg!
+      @overlay_install_session.abort!
     ensure
-      finalize_failed_overlay_mutation!
-      restore_overlay_failure_scope!
-      release_overlay_base_mutation_lease!
+      @overlay_install_session.close!
     end
     raise
   end
@@ -1039,76 +1009,14 @@ on_request: installed_on_request?, options:)
   end
 
   sig { void }
-  def verify_overlay_base_generation!
-    generation = @overlay_base_generation
-    Homebrew::Overlay.verify_base_generation!(generation) if generation
-  end
-
-  sig { returns(T::Boolean) }
-  def overlay_package_committed?
-    @overlay_local_keg_committed || @overlay_transaction&.finished? || false
-  end
-
-  sig { void }
-  def raise_overlay_transaction_failure!
-    return if overlay_package_committed?
-    return unless @overlay_base_generation
-
-    verify_overlay_base_generation!
-    return unless Homebrew.failed?
-
-    raise Homebrew::Overlay::TransactionFailure,
-          "#{formula.full_name} failed before its private keg was committed; uncommitted package state was discarded"
-  end
-
-  sig { void }
-  def rollback_overlay_uncommitted_local_keg!
-    return unless Homebrew::Overlay.active?
-    return if @overlay_transaction || @overlay_local_keg_preexisting || @overlay_local_keg_committed
-    return if @overlay_base_generation.nil?
-
-    Homebrew::Overlay.discard_local_keg!(formula.name, formula.pkg_version.to_s)
-  end
-
-  sig { void }
-  def finalize_failed_overlay_mutation!
-    return unless @overlay_mutation_owned
-
-    begin
-      Homebrew::Overlay.sync!(mutation: true) if Homebrew::Overlay.mutation_active?
-    ensure
-      @overlay_mutation_owned = false
-    end
-  end
-
-  sig { void }
-  def restore_overlay_failure_scope!
-    previous_failed = @overlay_previous_failed
-    return if previous_failed.nil?
-
-    Homebrew.failed = previous_failed || Homebrew.failed?
-    @overlay_previous_failed = nil
-  end
-
-  sig { void }
-  def release_overlay_base_mutation_lease!
-    lease = @overlay_base_mutation_lease
-    return if lease.nil?
-
-    @overlay_base_mutation_lease = nil
-    Homebrew::Overlay.release_base_mutation_lease(lease)
-  end
-
-  sig { void }
   def finish
     return if only_deps?
 
     ohai "Finishing up" if verbose?
 
-    verify_overlay_base_generation!
-    @overlay_transaction&.publish!
+    @overlay_install_session.publish!
     keg = Keg.new(formula.prefix)
-    overlay_managed_install = !@overlay_transaction.nil? || !@overlay_base_generation.nil?
+    overlay_managed_install = @overlay_install_session.managed?
     fix_linkage = !@poured_bottle || !formula.bottle_specification.skip_relocation?(tab: keg.tab)
 
     # The durable overlay package boundary deliberately precedes native link,
@@ -1119,33 +1027,19 @@ on_request: installed_on_request?, options:)
     # behavior instead of restoring the base rack beneath stale external state.
     if overlay_managed_install
       fix_dynamic_linkage(keg) if fix_linkage
-      raise_overlay_transaction_failure!
-      if @overlay_transaction
-        @overlay_transaction.commit!
-      elsif (generation = @overlay_base_generation)
-        Homebrew::Overlay.verify_base_generation!(generation)
-        Homebrew::Overlay.record_base_generation!(keg.to_path, generation)
-        Homebrew::Overlay.verify_base_generation!(generation)
-        @overlay_local_keg_committed = true
-        Homebrew::Overlay.bump_generation!
-        @overlay_mutation_owned = false
-      end
+      @overlay_install_session.commit!(keg)
     end
 
     link(keg)
-    raise_overlay_transaction_failure!
     warning = link_manual_command_warning
     opoo warning if !quiet? && warning.present?
 
     install_service
-    raise_overlay_transaction_failure!
 
     fix_dynamic_linkage(keg) if fix_linkage && !overlay_managed_install
-    raise_overlay_transaction_failure!
 
     require "install"
     Homebrew::Install.global_post_install
-    raise_overlay_transaction_failure!
 
     if build_bottle? || skip_post_install?
       unless quiet?
@@ -1161,7 +1055,6 @@ on_request: installed_on_request?, options:)
       formula.install_etc_var
       post_install if formula.post_install_steps_defined? || formula.post_install_defined?
     end
-    raise_overlay_transaction_failure!
 
     keg.prepare_debug_symbols if debug_symbols?
 
@@ -1214,29 +1107,19 @@ on_request: installed_on_request?, options:)
       Utils::Curl.clear_path_cache
     end
 
-    raise_overlay_transaction_failure!
-    unless overlay_managed_install
-      Homebrew::Overlay.bump_generation!
-      @overlay_mutation_owned = false
-    end
+    @overlay_install_session.complete_native_install!
     self.class.installed << formula
 
     caveats
 
     ohai "Summary" if verbose? || show_summary_heading?
     puts summary
+  # Overlay rollback must also cover interrupts and process exits during finalization.
   rescue Exception # rubocop:disable Lint/RescueException
-    begin
-      transaction = @overlay_transaction
-      transaction.rollback! if transaction && !transaction.finished?
-      rollback_overlay_uncommitted_local_keg!
-    ensure
-      finalize_failed_overlay_mutation!
-    end
+    @overlay_install_session.abort!
     raise
   ensure
-    restore_overlay_failure_scope!
-    release_overlay_base_mutation_lease!
+    @overlay_install_session.close!
     unlock
   end
 
@@ -1314,15 +1197,10 @@ on_request: installed_on_request?, options:)
       formula_path,
     ].concat(build_argv)
 
-    build_environment = if (transaction = @overlay_transaction)
-      { "HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID" => transaction.id }
-    else
-      {}
-    end
-    with_env(build_environment) do
+    with_env(@overlay_install_session.build_environment) do
       Sandbox.run_or_fork(*args, step: "building") do |sandbox|
         sandbox.allow_read_if_exists path: formula_path
-        sandbox.allow_read_if_exists path: transaction.transaction_dir if transaction
+        @overlay_install_session.apply_build_sandbox_rules(sandbox)
         if Homebrew::EnvConfig.require_tap_trust?
           require "trust"
           sandbox.allow_read_if_exists path: Homebrew::Trust.trust_file
