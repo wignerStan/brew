@@ -1,4 +1,4 @@
-name: Run final overlay review follow-up source correction
+name: Validate corrected overlay review follow-up source
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   correct:
-    if: github.event.head_commit.message == 'Run final overlay review follow-up source correction'
+    if: github.event.head_commit.message == 'Validate corrected overlay review follow-up source'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -20,7 +20,7 @@ jobs:
           ref: automation/overlay-review-followup-candidate
           fetch-depth: 0
 
-      - name: Apply the reviewed style corrections and validate
+      - name: Apply reviewed corrections and run source-only gates
         shell: bash
         env:
           BASE_SHA: 6d67dcb51bc2136bea491dd2d466df1c2d3c60e3
@@ -52,6 +52,11 @@ jobs:
               '    core = core[:prepare_position] + "\\n" + core[prepare_position:]\n'
           )
           script = script[:block_start] + replacement + script[label_end:]
+
+          workflow_gate = 'bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"\n'
+          if script.count(workflow_gate) != 1:
+              raise SystemExit('unexpected workflow-gate invocation')
+          script = script.replace(workflow_gate, '', 1)
           Path('/tmp/style-correct.sh').write_text(script, encoding='utf-8')
           PY
           bash /tmp/style-correct.sh
