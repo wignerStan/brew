@@ -36,6 +36,45 @@ jobs:
               line[10:] if line.startswith('          ') else line
               for line in lines
           ) + '\n'
+
+          old_helper = '''def replace_once(source: str, old: str, new: str, label: str) -> str:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return source.replace(old, new)
+'''
+          new_helper = '''def normalize_block(value: str) -> str:
+              lines = value.splitlines(keepends=True)
+              if len(lines) < 2:
+                  return value
+              first_indent = len(lines[0]) - len(lines[0].lstrip(" "))
+              continuation = [
+                  len(line) - len(line.lstrip(" "))
+                  for line in lines[1:]
+                  if line.strip()
+              ]
+              if not continuation:
+                  return value
+              extra = min(continuation) - first_indent
+              if extra <= 0:
+                  return value
+              return lines[0] + "".join(
+                  line[extra:] if line.startswith(" " * extra) else line
+                  for line in lines[1:]
+              )
+
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              old = normalize_block(old)
+              new = normalize_block(new)
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return source.replace(old, new)
+'''
+          if script.count(old_helper) != 1:
+              raise SystemExit('unexpected replacement helper shape')
+          script = script.replace(old_helper, new_helper, 1)
+
           opening = "python3 <<'PY'\n"
           closing = "\nPY\n\nchmod +x"
           if script.count(opening) != 1 or script.count(closing) != 1:
