@@ -195,6 +195,7 @@ module Homebrew
         Overlay.record_base_generation!(final_version, base_generation)
         Overlay.verify_base_generation!(base_generation)
         write_state("committing")
+        Overlay.mark_reinstall_committed!(formula_name, version, final_version)
         marker = final_version/TRANSACTION_MARKER
         Overlay.durable_unlink!(marker)
         write_state("committed")

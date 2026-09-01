@@ -89,15 +89,15 @@ module Homebrew
           Overlay.record_base_generation!(keg.to_path, generation)
           Overlay.verify_base_generation!(generation)
           @local_keg_committed = true
+          Overlay.mark_reinstall_committed!(formula_name, formula_version, keg.to_path)
           Overlay.bump_generation!
           @mutation_owned = false
         end
-        Overlay.mark_reinstall_committed!(formula_name, formula_version, keg.to_path)
       end
 
       sig { void }
       def complete_native_install!
-        return if managed?
+        return if managed? || !@mutation_owned
 
         Overlay.bump_generation!
         @mutation_owned = false

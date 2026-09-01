@@ -22,6 +22,7 @@ RSpec.describe Homebrew::Overlay::InstallSession do
     allow(Homebrew::Overlay).to receive_messages(
       active?:                     false,
       local_keg_realization?:      false,
+      mark_reinstall_committed!:   nil,
       mutation_active?:            false,
       release_base_mutation_lease: nil,
     )
@@ -84,9 +85,14 @@ RSpec.describe Homebrew::Overlay::InstallSession do
     session = described_class.new
     session.start!(formula)
 
-    expect(Homebrew::Overlay).to receive(:verify_base_generation!).with(generation).exactly(3).times
-    expect(Homebrew::Overlay).to receive(:record_base_generation!).with(keg.to_path, generation)
-    expect(Homebrew::Overlay).to receive(:bump_generation!)
+    expect(Homebrew::Overlay).to receive(:verify_base_generation!).with(generation).ordered
+    expect(Homebrew::Overlay).to receive(:verify_base_generation!).with(generation).ordered
+    expect(Homebrew::Overlay).to receive(:record_base_generation!).with(keg.to_path, generation).ordered
+    expect(Homebrew::Overlay).to receive(:verify_base_generation!).with(generation).ordered
+    expect(Homebrew::Overlay).to receive(:mark_reinstall_committed!)
+      .with("foo", "2.0", keg.to_path)
+      .ordered
+    expect(Homebrew::Overlay).to receive(:bump_generation!).ordered
     session.commit!(keg)
 
     expect(Homebrew::Overlay).not_to receive(:discard_local_keg!)
@@ -205,6 +211,19 @@ RSpec.describe Homebrew::Overlay::InstallSession do
 
     expect(session.managed?).to be(false)
     expect(Homebrew::Overlay).to receive(:bump_generation!)
+    session.complete_native_install!
+  end
+
+  it "leaves an outer writable mutation for its owner to finalize" do
+    allow(Homebrew::EnvConfig).to receive(:overlay?).and_return(true)
+    allow(Homebrew::Overlay).to receive(:mutation_active?).and_return(true)
+    expect(Homebrew::Overlay).not_to receive(:begin_mutation!)
+
+    session = described_class.new
+    session.start!(formula)
+
+    expect(session.managed?).to be(false)
+    expect(Homebrew::Overlay).not_to receive(:bump_generation!)
     session.complete_native_install!
   end
 end

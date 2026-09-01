@@ -290,6 +290,10 @@ RSpec.describe Homebrew::Overlay do
       events << [:unlink, path]
       original.call(path)
     end
+    allow(described_class).to receive(:mark_reinstall_committed!).and_wrap_original do |original, name, version, path|
+      events << [:reinstall_commit, name, version, path]
+      original.call(name, version, path)
+    end
 
     transaction.publish!
     transaction.commit!
@@ -304,6 +308,7 @@ RSpec.describe Homebrew::Overlay do
       [:fsync_tree, transaction.final_version],
       [:write, base_marker, "#{base_generation}\n"],
       [:write, state_file, "committing\n"],
+      [:reinstall_commit, "foo", "2.0", transaction.final_version],
       [:unlink, final_transaction_marker],
       [:write, state_file, "committed\n"],
     ]

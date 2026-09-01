@@ -6,12 +6,14 @@ repository="$(cd "${repository}" && pwd -P)"
 
 python3 - \
   "${repository}/Library/Homebrew/formula_installer.rb" \
-  "${repository}/Library/Homebrew/overlay/install_session.rb" <<'PY'
+  "${repository}/Library/Homebrew/overlay/install_session.rb" \
+  "${repository}/Library/Homebrew/overlay/core.rb" <<'PY'
 from pathlib import Path
 import sys
 
 installer = Path(sys.argv[1]).read_text(encoding="utf-8")
 session = Path(sys.argv[2]).read_text(encoding="utf-8")
+core = Path(sys.argv[3]).read_text(encoding="utf-8")
 
 finish_start = installer.index("  def finish\n")
 finish_end = installer.index("\n  sig { returns(String) }\n  def summary", finish_start)
@@ -46,6 +48,7 @@ session_required = [
     "return unless Homebrew.failed?",
     "uncommitted package state was discarded",
     "transaction.rollback! if transaction && !transaction.finished?",
+    "return if managed? || !@mutation_owned",
 ]
 for fragment in session_required:
     if fragment not in session:
@@ -61,7 +64,7 @@ install_order = [
 install_positions = [install.index(fragment) for fragment in install_order]
 if install_positions != sorted(install_positions):
     raise SystemExit(
-        f"overlay install-session validation is out of order: "
+        "overlay install-session validation is out of order: "
         f"{list(zip(install_order, install_positions))}"
     )
 
@@ -80,7 +83,7 @@ isolation_order = [
 isolation_positions = [start_method.index(fragment) for fragment in isolation_order]
 if isolation_positions != sorted(isolation_positions):
     raise SystemExit(
-        f"overlay non-raising failure isolation is out of order: "
+        "overlay non-raising failure isolation is out of order: "
         f"{list(zip(isolation_order, isolation_positions))}"
     )
 
@@ -91,8 +94,45 @@ validate_order = ["verify_base_generation!", "raise_transaction_failure!"]
 validate_positions = [validate.index(fragment) for fragment in validate_order]
 if validate_positions != sorted(validate_positions):
     raise SystemExit(
-        f"overlay package validation is out of order: "
+        "overlay package validation is out of order: "
         f"{list(zip(validate_order, validate_positions))}"
+    )
+
+session_commit_start = session.index("      def commit!(keg)\n")
+session_commit_end = session.index(
+    "      sig { void }\n      def complete_native_install!\n",
+    session_commit_start,
+)
+session_commit = session[session_commit_start:session_commit_end]
+non_transaction_order = [
+    "Overlay.record_base_generation!",
+    "Overlay.mark_reinstall_committed!",
+    "Overlay.bump_generation!",
+]
+non_transaction_positions = [session_commit.index(fragment) for fragment in non_transaction_order]
+if non_transaction_positions != sorted(non_transaction_positions):
+    raise SystemExit(
+        "non-transaction reinstall commit evidence is out of order: "
+        f"{list(zip(non_transaction_order, non_transaction_positions))}"
+    )
+
+transaction_commit_start = core.index("      def commit!\n")
+transaction_commit_end = core.index(
+    "      sig { void }\n      def rollback!\n",
+    transaction_commit_start,
+)
+transaction_commit = core[transaction_commit_start:transaction_commit_end]
+transaction_order = [
+    'write_state("committing")',
+    "Overlay.mark_reinstall_committed!",
+    "Overlay.durable_unlink!(marker)",
+    'write_state("committed")',
+]
+transaction_positions = [transaction_commit.index(fragment) for fragment in transaction_order]
+if transaction_positions != sorted(transaction_positions):
+    raise SystemExit(
+        "transaction reinstall commit evidence is out of order: "
+        f"{list(zip(transaction_order, transaction_positions))}"
     )
 PY
 
