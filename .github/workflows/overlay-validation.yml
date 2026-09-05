@@ -1,0 +1,71 @@
+name: Validate native overlay
+
+on:
+  pull_request:
+    branches:
+      - overlay-store
+  push:
+    branches:
+      - 'fix/overlay-*'
+      - 'refactor/overlay-*'
+
+permissions:
+  contents: read
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch overlay-store comparison base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin overlay-store
+
+      - name: Check formatting and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check origin/overlay-store...HEAD
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "${test_script}"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+      - name: Reject style offenses on overlay changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py origin/overlay-store HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel

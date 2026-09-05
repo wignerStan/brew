@@ -290,7 +290,7 @@ class Keg
   def linked?
     linked_keg_record.symlink? &&
       linked_keg_record.directory? &&
-      path == linked_keg_record.resolved_path
+      path == Homebrew::Overlay.keg_record_target(linked_keg_record)
   end
 
   sig { void }
@@ -301,7 +301,7 @@ class Keg
 
   sig { returns(T::Boolean) }
   def optlinked?
-    opt_record.symlink? && path == opt_record.resolved_path
+    opt_record.symlink? && path == Homebrew::Overlay.keg_record_target(opt_record)
   end
 
   sig { void }
@@ -361,15 +361,18 @@ class Keg
                                    CacheStoreDatabase[String, T::Hash[T.any(String, Symbol), T.anything]])).delete!
     end
 
+    # Remove namespace records while the keg still exists, so an interruption
+    # leaves an installed-but-unlinked keg rather than broken records that block
+    # overlay reconciliation.
+    remove_opt_record if optlinked?
+    remove_linked_keg_record if linked?
+    remove_old_aliases
+    remove_oldname_opt_records
     FileUtils.rm_r(path)
     path.parent.rmdir_if_possible
     if Homebrew::Overlay.active? && path.parent.expand_path == (HOMEBREW_CELLAR/name).expand_path
       Homebrew::Overlay.restore_inherited_rack!(name)
     end
-    remove_opt_record if optlinked?
-    remove_linked_keg_record if linked?
-    remove_old_aliases
-    remove_oldname_opt_records
     if owns_overlay_mutation
       if Homebrew::Overlay.active?
         Homebrew::Overlay.sync!(mutation: true)

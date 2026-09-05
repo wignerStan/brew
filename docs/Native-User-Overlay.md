@@ -77,15 +77,31 @@ $HOME/.linuxbrew/sbin
 
 The inherited Cellar and `opt` records let Homebrew resolve lower formulae and
 dependencies. The two general-purpose prefix trees are not presented as a
-filesystem union.
+filesystem union. The administrator `bin`, `sbin`, and `Caskroom` trees are not
+linked into the user prefix, and the download cache remains independent.
 
 ## Enable the overlay
 
-Enable it in `/etc/homebrew/brew.env`:
+The preferred per-user configuration is
+`${HOMEBREW_USER_CONFIG_HOME}/overlay.env`, which defaults to
+`$HOME/.homebrew/overlay.env`:
 
 ```text
 HOMEBREW_OVERLAY=1
 HOMEBREW_OVERLAY_BASE_PREFIX=/home/linuxbrew/.linuxbrew
+```
+
+The file is parsed as assignments, not sourced as shell code. It must be a
+regular, non-symlink, user-owned file and must not be group- or world-writable.
+`$HOME/.homebrew/brew.env` may contain the same overlay variables for backward
+compatibility.
+
+A site administrator may instead place the settings in
+`/etc/homebrew/brew.env`. Overlay settings always use this precedence, including
+when `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY` is set for other Homebrew settings:
+
+```text
+invoking process > user overlay.env/user brew.env > system configuration
 ```
 
 The administrator prefix must be readable and executable by developers but not
@@ -111,13 +127,14 @@ When the administrator prefix is not writable, the launcher initializes
 administrator-managed Homebrew repository, and re-executes through the user
 prefix.
 
-Generated overlay settings are stored in:
+Generated runtime overlay settings are stored in:
 
 ```text
 $HOME/.linuxbrew/etc/homebrew/overlay.env
 ```
 
-Initialization does not replace the developer-owned
+This is a managed bootstrap file, not the developer configuration file.
+Initialization does not replace the developer-owned user configuration or
 `$HOME/.linuxbrew/etc/homebrew/brew.env`.
 
 ## Formula command behavior
@@ -125,7 +142,7 @@ Initialization does not replace the developer-owned
 | Operation | Behavior in the developer prefix |
 | --- | --- |
 | `brew install foo` when an inherited version satisfies the request | Reuses the administrator formula without copying it |
-| `brew upgrade foo` or `brew reinstall foo` | Builds or pours a private realization and atomically publishes its Cellar rack |
+| `brew upgrade foo` or `brew reinstall foo` | Builds or pours a private realization; inherited first replacement uses atomic rack exchange, while an existing private keg uses an owner-locked crash-recovery backup |
 | `brew uninstall foo` for a private version | Removes only the private keg; inherited fallback becomes effective when no private version remains |
 | `brew uninstall --force foo` for a mixed rack | Removes all private versions and preserves every inherited version |
 | `brew uninstall foo` for an inherited-only formula | Refuses to modify the administrator package |
@@ -133,6 +150,9 @@ Initialization does not replace the developer-owned
 | `brew autoremove` | Evaluates and removes unnecessary private kegs even when another version is inherited |
 | `brew bundle cleanup` | Excludes inherited-only formulae and uses private-only force removal |
 | `brew link`, `brew unlink`, or `brew postinstall` on an inherited-only formula | Refuses the mutation; create a private realization first |
+| `brew pin foo` on an inherited-only formula | Refuses because administrator-owned bytes can disappear; run `brew reinstall foo` first |
+| `brew pin foo` on a mixed rack | Pins the newest user-owned realization, never a newer inherited keg |
+| `brew overlay-sync` | Forces a locked structural reconciliation; suitable for a daily cron job |
 | Migration into a name supplied by the base | Refuses before moving, merging, or deleting local files |
 
 The overlay is formula-first. Administrator casks are not inherited because cask
@@ -194,6 +214,12 @@ reported as corruption and is not silently discarded.
 
 ## Atomic rack publication and durable package boundary
 
+Before downloading, pouring, or building an inherited replacement, Homebrew
+exchanges two private probe directories twice on the active user Cellar. The
+probe verifies the selected GNU `mv --exchange` implementation, the kernel, and
+the actual deployment filesystem. Unsupported deployments therefore fail before
+package work begins.
+
 An inherited replacement proceeds as follows:
 
 1. Build or pour the formula into its transaction staging rack.
@@ -237,6 +263,14 @@ state. It then applies these rules:
 - a dirty generation with no live owner forces structural package-view
   reconciliation before a clean generation is published.
 
+A private reinstall stores the old keg under an owner-locked
+`Cellar/.homebrew-overlay-failed/reinstall-*` control path rather than a
+version-looking live rack entry. Recovery preserves a live owner, keeps a new keg
+that has crossed the durable base-generation boundary, and otherwise restores the
+old keg. Private uninstall removes `opt`, linked-keg, alias, and old-name records
+before deleting the keg, so interruption leaves an installed-but-unlinked keg or
+an inherited fallback instead of broken namespace records.
+
 Recovery never identifies ownership from a PID alone and never accepts a caller
 supplied owner token unless the corresponding advisory lock is actually held.
 
@@ -252,13 +286,39 @@ $HOME/.linuxbrew/var/homebrew/overlay-generation
 The value is a validated 64-character lowercase hexadecimal token. A developer
 invocation compares the two generations with its last committed view stamp. When
 they match, no dirty marker or recovery journal exists, and the state files are
-safe, startup returns without traversing either Cellar. When a generation
-changes, Homebrew rebuilds the inherited Cellar, `opt`, and linked-keg view and
-commits a new stamp.
+safe, startup normally returns without traversing either Cellar. When a
+generation changes, Homebrew rebuilds the inherited Cellar, `opt`, and linked-keg
+view and commits a new stamp.
+
+Normal commands do not perform a calendar-based structural scan. To detect
+administrator changes made outside the patched generation protocol without
+adding work to interactive shell startup, schedule the explicit forced sync with
+the user's crontab:
+
+```cron
+17 3 * * * /home/linuxbrew/.linuxbrew/bin/brew overlay-sync
+```
+
+Install the entry in each developer's own crontab, never root's, and stagger the
+minute across large multi-user systems. Use the actual administrator `bin/brew`
+path when the base prefix differs. The launcher reads the same inline, user, and
+system overlay configuration before redirecting into the user prefix.
+`brew overlay-sync` then uses the existing synchronization and mutation locks and
+performs a full structural reconciliation. It does not update repositories,
+install packages, or write the administrator prefix. Generation changes made
+through the patched `brew` still converge immediately on the next ordinary
+invocation.
+
+A pin to a private keg remains pointed at that user-owned keg across cron
+reconciliation and administrator generation changes; synchronization never
+repoints or silently removes it. A pin does not freeze the inherited dependency
+closure, so base-generation drift is still reported by startup and `brew doctor`.
+Review or reinstall affected private formulae explicitly rather than rebuilding
+or unpinning them from cron.
 
 Administrator package changes should be made through this patched `brew`. After
-a manual change that bypasses it, regenerate the administrator package token
-before developers rely on the overlay:
+a manual change that bypasses it, regenerating the administrator package token
+remains the immediate path:
 
 ```sh
 /home/linuxbrew/.linuxbrew/Homebrew/Library/Homebrew/utils/overlay.sh \
@@ -294,6 +354,7 @@ Temporary transaction paths are private descendants of the user Cellar:
 Cellar/.homebrew-overlay-staging/<id>/
 Cellar/.homebrew-overlay-racks/<id>/
 Cellar/.homebrew-overlay-failed/<id>/
+Cellar/.homebrew-overlay-failed/reinstall-<pid>-<nonce>/
 ```
 
 Ruby and shell helpers reject symlinked intermediate state directories. Managed
@@ -312,23 +373,39 @@ state.
 - `HOMEBREW_OVERLAY_FORCE=1` selects the user prefix even when the invoking user
   can write the base prefix.
 
+These four settings share the overlay-specific `inline > local > system`
+precedence. Other Homebrew settings retain their existing `brew.env` precedence.
+
 The base and user prefixes must be absolute and disjoint. The user prefix,
 `Cellar`, `Caskroom`, and internal state ancestors must be real owned directories
 rather than symlinks. Automatic Homebrew code and tap updates are disabled in an
 active user overlay; repository updates, tap maintenance, and administrator base
 upgrades remain administrator operations.
 
+## Deployment-branch promotion
+
+The scheduled upstream synchronization rebases into an automation candidate,
+runs the complete overlay shell matrix, full RSpec suite, RuboCop, and Sorbet on
+the exact candidate SHA, and only then promotes that SHA to `overlay-store` with
+an explicit force-with-lease against the previously observed deployment tip.
+Repository branch protection and required checks should enforce the same policy
+for all other writers.
+
 ## Operational boundaries
 
 - `$HOME/.linuxbrew` is not Homebrew's canonical Linux bottle prefix. Bottles
   that are not relocatable may need source builds.
 - `renameat2(RENAME_EXCHANGE)` must be supported by the Linux architecture,
-  kernel, and deployment filesystem used for the user Cellar.
+  kernel, and deployment filesystem used for the user Cellar. Startup probes the
+  exact tool and filesystem before inherited package work begins.
+- A developer installation holds a descriptor-validated shared lease on the
+  administrator mutation lock through its durable package boundary. Patched
+  administrator mutations take that lock exclusively and therefore cannot change
+  the lower package layer beneath the build. Changes that bypass the patched
+  mutation protocol remain outside this guarantee.
 - The generation protocol detects a base change during private publication and
-  reports later drift, but a non-service design cannot make a mutable
-  administrator prefix an immutable snapshot.
-- Administrator and developer mutation locks are separate. Do not mutate the
-  administrator prefix while a developer installation is running.
+  reports later drift, but it cannot turn out-of-protocol administrator writes
+  into an immutable snapshot.
 - A base-generation change conservatively marks all private formulae for review,
   even when the changed lower formula appears unrelated.
 - The lower package payload is reused through symlinks. This is not a Conda-style
@@ -337,9 +414,9 @@ upgrades remain administrator operations.
   read-only to developers.
 - Cask inheritance is outside this design.
 
-To disable automatic fallback, remove `HOMEBREW_OVERLAY=1` from system
-configuration. Preserve developer-installed formulae and configuration before
-removing `$HOME/.linuxbrew`.
+To disable automatic fallback, remove or override `HOMEBREW_OVERLAY=1` in the
+highest-precedence source that sets it. Preserve developer-installed formulae and
+configuration before removing `$HOME/.linuxbrew`.
 
 See [Final native-overlay review closure](Native-User-Overlay-Final-Review-Closure.md)
 for the finding-by-finding correction record and remaining target-host acceptance
