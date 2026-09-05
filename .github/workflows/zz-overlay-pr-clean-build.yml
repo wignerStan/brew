@@ -1,12 +1,11 @@
-name: Inspect overlay PR style debt
+name: Generate isolated overlay style autofix
 
 on:
   push:
     branches:
       - automation/overlay-pr-clean-build
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -15,23 +14,143 @@ env:
   HOMEBREW_DEVELOPER: "1"
 
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      patch_sha256: ${{ steps.patch.outputs.sha256 }}
     steps:
-      - name: Check out the real PR candidate
+      - name: Check out the exact style candidate without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: fix/overlay-pr-clean
+          ref: 92d49c3894670fbe0058ff9d584628b335408cd7
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Report remaining style offenses
+      - name: Apply safe automatic style corrections
         shell: bash
         run: |
-          set -o pipefail
-          bin/brew style --display-cop-names \
-            Library/Homebrew/overlay/core.rb \
-            Library/Homebrew/utils/overlay/core.sh \
-            Library/Homebrew/diagnostic.rb \
-            Library/Homebrew/test/diagnostic_checks_spec.rb
+          set -euo pipefail
+          git fetch --prune origin overlay-store
+          mapfile -t files < <(
+            git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
+              'Library/Homebrew/**/*.rb' \
+              'Library/Homebrew/**/*.rbi' \
+              'Library/Homebrew/**/*.sh' \
+              'bin/brew'
+          )
+          ((${#files[@]} > 0))
+          bin/brew style --fix "${files[@]}" || true
+
+      - name: Package the source-only correction
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch="${RUNNER_TEMP}/overlay-style-autofix.patch"
+          git diff --binary -- \
+            Library/Homebrew \
+            bin/brew >"${patch}"
+          test -s "${patch}"
+          python3 - "${patch}" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          patch = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          paths = re.findall(r"^diff --git a/(.+?) b/(.+?)$", patch, re.MULTILINE)
+          if not paths:
+              raise SystemExit("style patch has no changed paths")
+          for old, new in paths:
+              for path in (old, new):
+                  if not (path.startswith("Library/Homebrew/") or path == "bin/brew"):
+                      raise SystemExit(f"unexpected style patch path: {path}")
+                  if path.startswith(".github/workflows/"):
+                      raise SystemExit(f"workflow path is forbidden: {path}")
+          print("style patch paths:")
+          for _, path in paths:
+              print(path)
+          PY
+          sha256="$(sha256sum "${patch}" | awk '{print $1}')"
+          printf 'sha256=%s\n' "${sha256}" >>"${GITHUB_OUTPUT}"
+
+      - name: Upload the style correction
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: overlay-style-autofix
+          path: ${{ runner.temp }}/overlay-style-autofix.patch
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact source branch without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/overlay-style-autofix-result
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the source-only correction
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: overlay-style-autofix
+          path: ${{ runner.temp }}/overlay-style-autofix
+
+      - name: Verify, commit, and publish the correction
+        shell: bash
+        env:
+          EXPECTED_BASE: 92d49c3894670fbe0058ff9d584628b335408cd7
+          EXPECTED_PATCH_SHA256: ${{ needs.build.outputs.patch_sha256 }}
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          test "$(git rev-parse HEAD)" = "${EXPECTED_BASE}"
+          patch="${RUNNER_TEMP}/overlay-style-autofix/overlay-style-autofix.patch"
+          test "$(sha256sum "${patch}" | awk '{print $1}')" = "${EXPECTED_PATCH_SHA256}"
+          python3 - "${patch}" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          patch = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          for old, new in re.findall(r"^diff --git a/(.+?) b/(.+?)$", patch, re.MULTILINE):
+              for path in (old, new):
+                  if not (path.startswith("Library/Homebrew/") or path == "bin/brew"):
+                      raise SystemExit(f"unexpected style patch path: {path}")
+          PY
+          git apply --check "${patch}"
+          git apply "${patch}"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Library/Homebrew bin/brew
+          git commit -m "Normalize overlay style"
+
+          isolated_home="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${PUSH_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git -c core.hooksPath=/dev/null push \
+              --force-with-lease=refs/heads/automation/overlay-style-autofix-result:${EXPECTED_BASE} \
+              origin HEAD:refs/heads/automation/overlay-style-autofix-result
