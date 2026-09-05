@@ -3,6 +3,7 @@ from pathlib import Path
 
 path = Path('.github/scripts/build_overlay_pr_cleanup.py')
 source = path.read_text(encoding='utf-8')
+
 anchor = '''residual_compound_unless = [
 '''
 addition = '''plain_unless_pattern = re.compile(
@@ -26,4 +27,34 @@ if plain_unless_count < 5:
 '''
 if source.count(anchor) != 1:
     raise SystemExit('residual compound-unless anchor changed')
-path.write_text(source.replace(anchor, addition + anchor), encoding='utf-8')
+source = source.replace(anchor, addition + anchor)
+
+count_anchor = '''    2,
+    "base lock descriptor validation",
+'''
+if source.count(count_anchor) != 1:
+    raise SystemExit('base-lock replacement count anchor changed')
+source = source.replace(
+    count_anchor,
+    '''    1,
+    "base lock descriptor validation",
+''',
+)
+
+sync_anchor = '''shell = replace_once(
+    shell,
+    '''    # The listing is removed only on error or after the read completes.\\n'''
+'''
+sync_insertion = '''shell = replace_once(
+    shell,
+    '''  (\\n    local mutation_fd="" owner_lock transactions\\n''',
+    '''  # The synchronizer validates the same base-lock path whose descriptor it inherits.\\n  # shellcheck disable=SC2094\\n  (\\n    local mutation_fd="" owner_lock transactions\\n''',
+    "synchronizer base lock descriptor validation",
+)
+
+'''
+if source.count(sync_anchor) != 1:
+    raise SystemExit('synchronizer lock insertion anchor changed')
+source = source.replace(sync_anchor, sync_insertion + sync_anchor)
+
+path.write_text(source, encoding='utf-8')
