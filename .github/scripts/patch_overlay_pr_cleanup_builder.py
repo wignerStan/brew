@@ -52,4 +52,37 @@ if source.count(sync_anchor) != 1:
     raise SystemExit("synchronizer lock insertion anchor changed")
 source = source.replace(sync_anchor, sync_insertion + sync_anchor)
 
+old_reproducer = r"""reproducer_path = Path("Library/Homebrew/test/support/overlay_final_review_reproducer.sh")
+reproducer = reproducer_path.read_text(encoding="utf-8")
+reproducer_anchor = '''bash "${script_dir}/overlay_architecture_test.sh" "${repo}"\n'''
+reproducer_addition = '''bash "${script_dir}/overlay_architecture_test.sh" "${repo}"\nbash "${script_dir}/overlay_directory_durability_test.sh" "${repo}"\npython3 "${script_dir}/overlay_style_delta_check_test.py"\n'''
+reproducer = replace_once(
+    reproducer,
+    reproducer_anchor,
+    reproducer_addition,
+    "aggregate durability and style-parser tests",
+)
+reproducer_path.write_text(reproducer, encoding="utf-8")
+"""
+new_reproducer = r"""reproducer_path = Path("Library/Homebrew/test/support/overlay_final_review_reproducer.sh")
+reproducer = reproducer_path.read_text(encoding="utf-8")
+reproducer = replace_once(
+    reproducer,
+    "  overlay_architecture_test.sh\n",
+    "  overlay_architecture_test.sh\n  overlay_directory_durability_test.sh\n",
+    "aggregate directory-durability test registration",
+)
+reproducer = replace_once(
+    reproducer,
+    "done\n\nprintf 'complete native overlay audit regression gate: PASS\\n'\n",
+    "done\n\npython3 \"${support}/overlay_style_delta_check_test.py\"\n\n"
+    "printf 'complete native overlay audit regression gate: PASS\\n'\n",
+    "aggregate style-parser regression invocation",
+)
+reproducer_path.write_text(reproducer, encoding="utf-8")
+"""
+if source.count(old_reproducer) != 1:
+    raise SystemExit("aggregate runner transformation block changed")
+source = source.replace(old_reproducer, new_reproducer)
+
 path.write_text(source, encoding="utf-8")
