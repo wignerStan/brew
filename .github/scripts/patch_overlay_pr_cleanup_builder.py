@@ -85,4 +85,62 @@ if source.count(old_reproducer) != 1:
     raise SystemExit("aggregate runner transformation block changed")
 source = source.replace(old_reproducer, new_reproducer)
 
+core_write_anchor = 'core_path.write_text(core, encoding="utf-8")\n'
+core_finalization = r'''core = re.sub(
+    r"^(?P<indent>\s*)rescue Exception # rubocop:disable Lint/RescueException -- cleanup must include Interrupt and SystemExit$",
+    lambda match: (
+        f"{match.group('indent')}# Cleanup must also restore durable state for Interrupt and SystemExit.\n"
+        f"{match.group('indent')}rescue Exception # rubocop:disable Lint/RescueException"
+    ),
+    core,
+    flags=re.MULTILINE,
+)
+core = replace_once(
+    core,
+    "      condition_met = active? && valid_formula_name?(formula_name) && "
+    "transaction_id.match?(/\\A[1-9][0-9]*-[0-9a-f]{24}\\z/)\n",
+    "      condition_met =\n"
+    "        active? &&\n"
+    "        valid_formula_name?(formula_name) &&\n"
+    "        transaction_id.match?(/\\A[1-9][0-9]*-[0-9a-f]{24}\\z/)\n",
+    "build transaction identifier line length",
+)
+core = replace_once(
+    core,
+    "        condition_met = directory.directory? && !directory.symlink? && "
+    "directory.stat.uid == Process.uid && directory.writable?\n",
+    "        condition_met =\n"
+    "          directory.directory? &&\n"
+    "          !directory.symlink? &&\n"
+    "          directory.stat.uid == Process.uid &&\n"
+    "          directory.writable?\n",
+    "staging directory line length",
+)
+
+'''
+if source.count(core_write_anchor) != 1:
+    raise SystemExit("core write anchor changed")
+source = source.replace(core_write_anchor, core_finalization + core_write_anchor)
+
+shell_write_anchor = 'shell_path.write_text(shell, encoding="utf-8")\n'
+shell_finalization = r'''shell = replace_once(
+    shell,
+    "  case \"$1\" in\n"
+    "    \"~\") printf '%s\\n' \"${HOME}\" ;;\n"
+    "    # Match a literal tilde; expansion happens only in the emitted path.\n"
+    "    # shellcheck disable=SC2088\n"
+    "    \"~/\"*) printf '%s/%s\\n' \"${HOME}\" \"${1#\\~/}\" ;;\n",
+    "  # Match a literal tilde; expansion happens only in the emitted path.\n"
+    "  # shellcheck disable=SC2088\n"
+    "  case \"$1\" in\n"
+    "    \"~\") printf '%s\\n' \"${HOME}\" ;;\n"
+    "    \"~/\"*) printf '%s/%s\\n' \"${HOME}\" \"${1#\\~/}\" ;;\n",
+    "literal tilde ShellCheck directive placement",
+)
+
+'''
+if source.count(shell_write_anchor) != 1:
+    raise SystemExit("shell write anchor changed")
+source = source.replace(shell_write_anchor, shell_finalization + shell_write_anchor)
+
 path.write_text(source, encoding="utf-8")
