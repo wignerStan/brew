@@ -38,7 +38,7 @@ source = source.replace(
 
 sync_anchor = r"""shell = replace_once(
     shell,
-    '''    # The listing is removed only on error or after the read completes.\n'''
+    '''    while IFS= read -r -d '' link\n''',
 """
 sync_insertion = r"""shell = replace_once(
     shell,
