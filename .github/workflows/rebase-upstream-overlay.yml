@@ -38,34 +38,43 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Rebase onto current Homebrew main
+      - name: Rebase onto current Homebrew main with isolated Git configuration
         id: rebase
         shell: bash
         run: |
           set -euo pipefail
 
+          isolated_home="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          trap 'rm -rf "${isolated_home}" "${template_dir}"' EXIT
+          export HOME="${isolated_home}"
           export PATH=/usr/bin:/bin
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config core.hooksPath /dev/null
-          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
-            git remote set-url upstream https://github.com/Homebrew/brew.git
-          git fetch --prune origin overlay-store
-          git fetch --prune upstream main
-          git checkout --detach origin/overlay-store
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+          export GIT_TERMINAL_PROMPT=0
 
-          before="$(git rev-parse HEAD)"
-          upstream="$(git rev-parse upstream/main)"
+          /usr/bin/git config --local user.name "github-actions[bot]"
+          /usr/bin/git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          /usr/bin/git config --local core.hooksPath /dev/null
+          /usr/bin/git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            /usr/bin/git remote set-url upstream https://github.com/Homebrew/brew.git
+          /usr/bin/git -c protocol.ext.allow=never fetch --prune origin overlay-store
+          /usr/bin/git -c protocol.ext.allow=never fetch --prune upstream main
+          /usr/bin/git checkout --detach origin/overlay-store
+
+          before="$(/usr/bin/git rev-parse HEAD)"
+          upstream="$(/usr/bin/git rev-parse upstream/main)"
           printf 'before=%s\n' "${before}" >>"${GITHUB_OUTPUT}"
           printf 'upstream=%s\n' "${upstream}" >>"${GITHUB_OUTPUT}"
-          if ! git -c core.hooksPath=/dev/null rebase "${upstream}"; then
-            git rebase --abort || true
+          if ! /usr/bin/git -c core.hooksPath=/dev/null rebase "${upstream}"; then
+            /usr/bin/git rebase --abort || true
             echo "Upstream rebase has semantic conflicts; overlay-store was left unchanged." >&2
             exit 1
           fi
 
-          after="$(git rev-parse HEAD)"
-          tree="$(git rev-parse 'HEAD^{tree}')"
+          after="$(/usr/bin/git rev-parse HEAD)"
+          tree="$(/usr/bin/git rev-parse 'HEAD^{tree}')"
           printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
           printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
           if [[ "${before}" == "${after}" ]]; then
@@ -86,7 +95,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          isolated_home="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          trap 'rm -rf "${isolated_home}" "${template_dir}"; /usr/bin/git update-ref -d refs/overlay-bundle/candidate' EXIT
+          export HOME="${isolated_home}"
           export PATH=/usr/bin:/bin
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+          export GIT_TERMINAL_PROMPT=0
+
           test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
           test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
           /usr/bin/git merge-base --is-ancestor "${UPSTREAM}" "${AFTER}"
@@ -96,7 +114,6 @@ jobs:
           bundle="${bundle_dir}/candidate.bundle"
           candidate_ref=refs/overlay-bundle/candidate
           /usr/bin/git update-ref "${candidate_ref}" "${AFTER}"
-          trap '/usr/bin/git update-ref -d refs/overlay-bundle/candidate' EXIT
           /usr/bin/git bundle create "${bundle}" "${candidate_ref}" "^${UPSTREAM}"
           /usr/bin/git bundle verify "${bundle}"
           sha256="$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')"
@@ -225,7 +242,10 @@ jobs:
 
   promote:
     needs: [prepare, validate]
-    if: needs.prepare.outputs.changed == 'true' && needs.validate.result == 'success'
+    if: >-
+      needs.prepare.outputs.changed == 'true' &&
+      needs.validate.result == 'success' &&
+      vars.OVERLAY_AUTOPROMOTION_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: overlay-promotion
@@ -236,6 +256,17 @@ jobs:
         with:
           name: overlay-rebase-candidate
           path: ${{ runner.temp }}/overlay-rebase-candidate
+
+      - name: Mint a short-lived repository-scoped promotion token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.OVERLAY_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OVERLAY_PROMOTION_APP_PRIVATE_KEY }}
+          owner: wangzheng15534-blip
+          repositories: brew
+          permission-contents: write
+          permission-workflows: write
 
       - name: Promote only the verified commit without executing candidate files
         shell: bash
@@ -248,12 +279,12 @@ jobs:
           VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
           VALIDATED_TREE: ${{ needs.validate.outputs.validated_tree }}
           VALIDATED_BUNDLE_SHA256: ${{ needs.validate.outputs.validated_bundle_sha256 }}
-          OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
+          OVERLAY_PROMOTION_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
           if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
-            echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+            echo "::error::the short-lived overlay promotion token is unavailable"
             exit 1
           fi
           test "${AFTER}" = "${VALIDATED_SHA}"
