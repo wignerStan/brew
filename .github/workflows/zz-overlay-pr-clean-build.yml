@@ -127,10 +127,19 @@ jobs:
           set -euo pipefail
           patch="${RUNNER_TEMP}/overlay-maintainability-hardening.patch"
           index="${RUNNER_TEMP}/overlay-maintainability-hardening.index"
+          reviewed_paths=(
+            Library/Homebrew/overlay/core.rb
+            Library/Homebrew/test/overlay/core_spec.rb
+            Library/Homebrew/test/support/overlay_directory_durability_test.sh
+            Library/Homebrew/test/support/overlay_final_review_reproducer.sh
+            Library/Homebrew/test/support/overlay_style_delta_check.py
+            Library/Homebrew/test/support/overlay_style_delta_check_test.py
+            Library/Homebrew/utils/overlay/core.sh
+          )
           rm -f "${index}"
           GIT_INDEX_FILE="${index}" git read-tree HEAD
-          GIT_INDEX_FILE="${index}" git add -A -- Library/Homebrew
-          GIT_INDEX_FILE="${index}" git diff --cached --binary HEAD -- Library/Homebrew >"${patch}"
+          GIT_INDEX_FILE="${index}" git add -A -- "${reviewed_paths[@]}"
+          GIT_INDEX_FILE="${index}" git diff --cached --binary HEAD -- "${reviewed_paths[@]}" >"${patch}"
           test -s "${patch}"
           python3 - "${patch}" <<'PY'
           import pathlib
@@ -203,6 +212,15 @@ jobs:
         run: |
           set -euo pipefail
           export PATH=/usr/bin:/bin
+          reviewed_paths=(
+            Library/Homebrew/overlay/core.rb
+            Library/Homebrew/test/overlay/core_spec.rb
+            Library/Homebrew/test/support/overlay_directory_durability_test.sh
+            Library/Homebrew/test/support/overlay_final_review_reproducer.sh
+            Library/Homebrew/test/support/overlay_style_delta_check.py
+            Library/Homebrew/test/support/overlay_style_delta_check_test.py
+            Library/Homebrew/utils/overlay/core.sh
+          )
           test "$(git rev-parse HEAD)" = "${EXPECTED_BASE}"
           patch="${RUNNER_TEMP}/overlay-maintainability-hardening/overlay-maintainability-hardening.patch"
           test "$(sha256sum "${patch}" | awk '{print $1}')" = "${EXPECTED_PATCH_SHA256}"
@@ -211,7 +229,7 @@ jobs:
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- Library/Homebrew
+          git add -- "${reviewed_paths[@]}"
           test "$(git write-tree)" = "${EXPECTED_TREE}"
           git commit -m "Harden overlay durability and maintenance gates"
           test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
