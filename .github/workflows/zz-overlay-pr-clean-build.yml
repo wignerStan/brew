@@ -40,10 +40,12 @@ jobs:
           install -m 0600 \
             .github/scripts/build_overlay_pr_cleanup.py \
             .github/scripts/patch_overlay_pr_cleanup_builder.py \
+            .github/scripts/fix_overlay_reader_builder.py \
             "${source_root}/.github/scripts/"
           (
             cd "${source_root}"
             python3 .github/scripts/patch_overlay_pr_cleanup_builder.py
+            python3 .github/scripts/fix_overlay_reader_builder.py
           )
           git checkout --detach 87262ba9eca4ce4889784338136bb0e3b1105d03
           git clean -ffdx
