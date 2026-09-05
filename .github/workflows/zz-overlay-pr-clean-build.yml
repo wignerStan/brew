@@ -22,7 +22,7 @@ jobs:
       contents: read
     outputs:
       patch_sha256: ${{ steps.patch.outputs.sha256 }}
-      result_sha: ${{ steps.metadata.outputs.result_sha }}
+      result_tree: ${{ steps.patch.outputs.tree }}
     steps:
       - name: Check out the transformation source without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -126,7 +126,11 @@ jobs:
         run: |
           set -euo pipefail
           patch="${RUNNER_TEMP}/overlay-maintainability-hardening.patch"
-          git diff --binary -- Library/Homebrew >"${patch}"
+          index="${RUNNER_TEMP}/overlay-maintainability-hardening.index"
+          rm -f "${index}"
+          GIT_INDEX_FILE="${index}" git read-tree HEAD
+          GIT_INDEX_FILE="${index}" git add -A -- Library/Homebrew
+          GIT_INDEX_FILE="${index}" git diff --cached --binary HEAD -- Library/Homebrew >"${patch}"
           test -s "${patch}"
           python3 - "${patch}" <<'PY'
           import pathlib
@@ -154,17 +158,11 @@ jobs:
               raise SystemExit(f"hardening patch omitted expected paths: {sorted(missing)}")
           PY
           sha256="$(sha256sum "${patch}" | awk '{print $1}')"
+          tree="$(GIT_INDEX_FILE="${index}" git write-tree)"
+          test "${#sha256}" -eq 64
+          test "${#tree}" -eq 40
           printf 'sha256=%s\n' "${sha256}" >>"${GITHUB_OUTPUT}"
-
-      - name: Record the prospective commit metadata
-        id: metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          tree="$(git write-tree)"
-          result_sha="$(printf '%s\n' 'Harden overlay durability and maintenance gates' | \
-            git commit-tree "${tree}" -p HEAD)"
-          printf 'result_sha=%s\n' "${result_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
 
       - name: Upload the verified hardening patch
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -200,6 +198,7 @@ jobs:
         env:
           EXPECTED_BASE: 87262ba9eca4ce4889784338136bb0e3b1105d03
           EXPECTED_PATCH_SHA256: ${{ needs.build.outputs.patch_sha256 }}
+          EXPECTED_TREE: ${{ needs.build.outputs.result_tree }}
           PUSH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -213,7 +212,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Library/Homebrew
+          test "$(git write-tree)" = "${EXPECTED_TREE}"
           git commit -m "Harden overlay durability and maintenance gates"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
 
           isolated_home="$(mktemp -d)"
           askpass="$(mktemp)"
