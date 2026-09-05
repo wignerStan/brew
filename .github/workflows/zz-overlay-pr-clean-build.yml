@@ -1,4 +1,4 @@
-name: Generate isolated overlay style autofix
+name: Generate isolated overlay Ruby style correction
 
 on:
   push:
@@ -16,20 +16,20 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
       patch_sha256: ${{ steps.patch.outputs.sha256 }}
     steps:
-      - name: Check out the exact style candidate without credentials
+      - name: Check out the exact hardened candidate without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: 92d49c3894670fbe0058ff9d584628b335408cd7
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Apply safe automatic style corrections
+      - name: Apply safe Ruby style corrections only
         shell: bash
         run: |
           set -euo pipefail
@@ -37,22 +37,41 @@ jobs:
           mapfile -t files < <(
             git diff --name-only --diff-filter=ACMR origin/overlay-store...HEAD -- \
               'Library/Homebrew/**/*.rb' \
-              'Library/Homebrew/**/*.rbi' \
-              'Library/Homebrew/**/*.sh' \
-              'bin/brew'
+              'Library/Homebrew/**/*.rbi'
           )
           ((${#files[@]} > 0))
           bin/brew style --fix "${files[@]}" || true
+          if git diff --diff-filter=D --name-only -- Library/Homebrew | grep -q .; then
+            echo "Ruby style correction unexpectedly deleted a file" >&2
+            exit 1
+          fi
+          mapfile -t modified < <(git diff --name-only -- Library/Homebrew)
+          for file in "${modified[@]}"; do
+            case "${file}" in
+              *.rb) ruby -c "${file}" >/dev/null ;;
+              *.rbi) ;;
+              *)
+                echo "unexpected Ruby style path: ${file}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Verify the mechanically corrected Ruby tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+          bin/brew tests --no-parallel \
+            --only=overlay/core,overlay/install_session,overlay/reinstall_session,overlay/reinstall_backup,formula_installer,diagnostic_checks
 
       - name: Package the source-only correction
         id: patch
         shell: bash
         run: |
           set -euo pipefail
-          patch="${RUNNER_TEMP}/overlay-style-autofix.patch"
-          git diff --binary -- \
-            Library/Homebrew \
-            bin/brew >"${patch}"
+          patch="${RUNNER_TEMP}/overlay-ruby-style.patch"
+          git diff --binary -- Library/Homebrew >"${patch}"
           test -s "${patch}"
           python3 - "${patch}" <<'PY'
           import pathlib
@@ -62,25 +81,24 @@ jobs:
           patch = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
           paths = re.findall(r"^diff --git a/(.+?) b/(.+?)$", patch, re.MULTILINE)
           if not paths:
-              raise SystemExit("style patch has no changed paths")
+              raise SystemExit("Ruby style patch has no changed paths")
           for old, new in paths:
-              for path in (old, new):
-                  if not (path.startswith("Library/Homebrew/") or path == "bin/brew"):
-                      raise SystemExit(f"unexpected style patch path: {path}")
-                  if path.startswith(".github/workflows/"):
-                      raise SystemExit(f"workflow path is forbidden: {path}")
-          print("style patch paths:")
-          for _, path in paths:
+              if old != new:
+                  raise SystemExit(f"Ruby style patch renamed a file: {old} -> {new}")
+              if not old.startswith("Library/Homebrew/") or not old.endswith((".rb", ".rbi")):
+                  raise SystemExit(f"unexpected Ruby style path: {old}")
+          print("Ruby style patch paths:")
+          for path, _ in paths:
               print(path)
           PY
           sha256="$(sha256sum "${patch}" | awk '{print $1}')"
           printf 'sha256=%s\n' "${sha256}" >>"${GITHUB_OUTPUT}"
 
-      - name: Upload the style correction
+      - name: Upload the verified Ruby correction
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: overlay-style-autofix
-          path: ${{ runner.temp }}/overlay-style-autofix.patch
+          name: overlay-ruby-style
+          path: ${{ runner.temp }}/overlay-ruby-style.patch
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -92,18 +110,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out the exact source branch without persisted credentials
+      - name: Check out the exact publication branch without credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: automation/overlay-style-autofix-result
+          ref: automation/overlay-ruby-autofix-result
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Download the source-only correction
+      - name: Download the verified Ruby correction
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: overlay-style-autofix
-          path: ${{ runner.temp }}/overlay-style-autofix
+          name: overlay-ruby-style
+          path: ${{ runner.temp }}/overlay-ruby-style
 
       - name: Verify, commit, and publish the correction
         shell: bash
@@ -115,7 +133,7 @@ jobs:
           set -euo pipefail
           export PATH=/usr/bin:/bin
           test "$(git rev-parse HEAD)" = "${EXPECTED_BASE}"
-          patch="${RUNNER_TEMP}/overlay-style-autofix/overlay-style-autofix.patch"
+          patch="${RUNNER_TEMP}/overlay-ruby-style/overlay-ruby-style.patch"
           test "$(sha256sum "${patch}" | awk '{print $1}')" = "${EXPECTED_PATCH_SHA256}"
           python3 - "${patch}" <<'PY'
           import pathlib
@@ -124,9 +142,8 @@ jobs:
 
           patch = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
           for old, new in re.findall(r"^diff --git a/(.+?) b/(.+?)$", patch, re.MULTILINE):
-              for path in (old, new):
-                  if not (path.startswith("Library/Homebrew/") or path == "bin/brew"):
-                      raise SystemExit(f"unexpected style patch path: {path}")
+              if old != new or not old.startswith("Library/Homebrew/") or not old.endswith((".rb", ".rbi")):
+                  raise SystemExit(f"unexpected Ruby style path: {old} -> {new}")
           PY
           git apply --check "${patch}"
           git apply "${patch}"
@@ -134,10 +151,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- Library/Homebrew
-          if ! git diff --quiet -- bin/brew; then
-            git add -f -- bin/brew
-          fi
-          git commit -m "Normalize overlay style"
+          git commit -m "Normalize overlay Ruby style"
 
           isolated_home="$(mktemp -d)"
           askpass="$(mktemp)"
@@ -155,5 +169,5 @@ jobs:
           chmod 0700 "${askpass}"
           GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
             git -c core.hooksPath=/dev/null push \
-              --force-with-lease=refs/heads/automation/overlay-style-autofix-result:${EXPECTED_BASE} \
-              origin HEAD:refs/heads/automation/overlay-style-autofix-result
+              --force-with-lease=refs/heads/automation/overlay-ruby-autofix-result:${EXPECTED_BASE} \
+              origin HEAD:refs/heads/automation/overlay-ruby-autofix-result
