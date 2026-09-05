@@ -36,18 +36,18 @@ source = source.replace(
     '    1,\n    "base lock descriptor validation",\n',
 )
 
-sync_anchor = r'''shell = replace_once(
+sync_anchor = r"""shell = replace_once(
     shell,
-    ''' + "'''" + r'''    # The listing is removed only on error or after the read completes.\n'''
-'''
-sync_insertion = r'''shell = replace_once(
+    '''    # The listing is removed only on error or after the read completes.\n'''
+"""
+sync_insertion = r"""shell = replace_once(
     shell,
-    ''' + "'''" + r'''  (\n    local mutation_fd="" owner_lock transactions\n''',
-    ''' + "'''" + r'''  # The synchronizer validates the same base-lock path whose descriptor it inherits.\n  # shellcheck disable=SC2094\n  (\n    local mutation_fd="" owner_lock transactions\n''',
+    '''  (\n    local mutation_fd="" owner_lock transactions\n''',
+    '''  # The synchronizer validates the same base-lock path whose descriptor it inherits.\n  # shellcheck disable=SC2094\n  (\n    local mutation_fd="" owner_lock transactions\n''',
     "synchronizer base lock descriptor validation",
 )
 
-'''
+"""
 if source.count(sync_anchor) != 1:
     raise SystemExit("synchronizer lock insertion anchor changed")
 source = source.replace(sync_anchor, sync_insertion + sync_anchor)
