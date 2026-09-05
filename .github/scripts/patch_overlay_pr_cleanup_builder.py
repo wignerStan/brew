@@ -116,6 +116,64 @@ core = replace_once(
     "          directory.writable?\n",
     "staging directory line length",
 )
+core = replace_once(
+    core,
+    "        descriptor = T.must(retained)\n",
+    "        descriptor = retained\n",
+    "retained descriptor type",
+)
+core = replace_once(
+    core,
+    "      opened = false\n",
+    "      opened = T.let(false, T::Boolean)\n",
+    "descriptor reader open-state type",
+)
+core = replace_once(
+    core,
+    "        condition_met = rack.directory? && !rack.symlink? && valid_formula_name?(rack.basename.to_s)\n"
+    "        next unless condition_met\n",
+    "        valid_rack = rack.directory? && !rack.symlink? && valid_formula_name?(rack.basename.to_s)\n"
+    "        next unless valid_rack\n",
+    "base-generation rack predicate",
+)
+core = replace_once(
+    core,
+    "          condition_met = keg.directory? && !keg.symlink? && valid_version_name?(keg.basename.to_s)\n"
+    "          next unless condition_met\n",
+    "          valid_keg = keg.directory? && !keg.symlink? && valid_version_name?(keg.basename.to_s)\n"
+    "          next unless valid_keg\n",
+    "base-generation keg predicate",
+)
+core = replace_once(
+    core,
+    "      condition_met =\n"
+    "        active? &&\n"
+    "        valid_formula_name?(formula_name) &&\n"
+    "        transaction_id.match?(/\\A[1-9][0-9]*-[0-9a-f]{24}\\z/)\n"
+    "      unless condition_met\n",
+    "      valid_transaction_id =\n"
+    "        active? &&\n"
+    "        valid_formula_name?(formula_name) &&\n"
+    "        transaction_id.match?(/\\A[1-9][0-9]*-[0-9a-f]{24}\\z/)\n"
+    "      unless valid_transaction_id\n",
+    "build transaction predicate name",
+)
+core = replace_once(
+    core,
+    "        condition_met =\n"
+    "          directory.directory? &&\n"
+    "          !directory.symlink? &&\n"
+    "          directory.stat.uid == Process.uid &&\n"
+    "          directory.writable?\n"
+    "        unless condition_met\n",
+    "        safe_staging_directory =\n"
+    "          directory.directory? &&\n"
+    "          !directory.symlink? &&\n"
+    "          directory.stat.uid == Process.uid &&\n"
+    "          directory.writable?\n"
+    "        unless safe_staging_directory\n",
+    "staging directory predicate name",
+)
 
 '''
 if source.count(core_write_anchor) != 1:
