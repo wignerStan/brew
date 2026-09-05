@@ -12,8 +12,6 @@ module Homebrew
   # as symlinks; a locally overridden formula uses a real native Cellar rack
   # containing the local keg and read-only links to other base versions.
   module Overlay
-    extend T::Sig
-
     @link_state_entries = T.let(nil, T.nilable(T::Hash[String, String]))
     @install_transactions = T.let({}, T::Hash[String, T.untyped])
     @reinstall_backups = T.let({}, T::Hash[String, T.untyped])
@@ -21,8 +19,6 @@ module Homebrew
     @atomic_exchange_supported = T.let(false, T::Boolean)
 
     class InheritedKegError < RuntimeError
-      extend T::Sig
-
       sig { params(keg_path: Pathname, base_prefix: Pathname).void }
       def initialize(keg_path, base_prefix)
         super <<~EOS
@@ -36,8 +32,6 @@ module Homebrew
     class TransactionFailure < RuntimeError; end
 
     class BaseGenerationChangedError < TransactionFailure
-      extend T::Sig
-
       sig { params(expected: String, actual: String).void }
       def initialize(expected, actual)
         super <<~EOS
@@ -63,8 +57,6 @@ module Homebrew
     # renameat2(RENAME_EXCHANGE)) to swap it with the inherited rack in one
     # filesystem operation.
     class FormulaTransaction
-      extend T::Sig
-
       sig { returns(String) }
       attr_reader :formula_name
 
@@ -112,9 +104,13 @@ module Homebrew
       def initialize(formula, base_generation:)
         @formula_name = T.let(formula.name, String)
         @version = T.let(formula.pkg_version.to_s, String)
-        @base_generation = T.let(base_generation, String)
-        raise ArgumentError, "invalid formula name: #{@formula_name}" unless Overlay.valid_formula_name?(@formula_name)
+        @base_generation = base_generation
+        unless Overlay.valid_formula_name?(@formula_name)
+          raise ArgumentError,
+                "invalid formula name: #{@formula_name}"
+        end
         raise ArgumentError, "invalid formula version: #{@version}" unless Overlay.valid_version_name?(@version)
+
         Overlay.validate_base_generation!(@base_generation)
 
         @id = T.let("#{Process.pid}-#{SecureRandom.hex(12)}", String)
@@ -208,6 +204,7 @@ module Homebrew
       sig { void }
       def rollback!
         return if @finished
+
         Overlay.unregister_transaction(formula_name, self)
         write_state("rolling-back") if transaction_dir.directory?
 
@@ -270,9 +267,9 @@ module Homebrew
         unless stat.file? && stat.uid == Process.uid && stat.nlink == 1
           raise TransactionFailure, "unsafe overlay transaction owner lock: #{@owner_lock_path}"
         end
-        unless owner_lock.flock(File::LOCK_EX | File::LOCK_NB)
-          raise TransactionFailure, "could not acquire overlay transaction owner lock: #{@owner_lock_path}"
-        end
+        return if owner_lock.flock(File::LOCK_EX | File::LOCK_NB)
+
+        raise TransactionFailure, "could not acquire overlay transaction owner lock: #{@owner_lock_path}"
       end
 
       sig { void }
@@ -296,7 +293,10 @@ module Homebrew
       sig { void }
       def validate_owner_lock_path!
         owner_lock = @owner_lock
-        raise TransactionFailure, "overlay transaction owner lock is not open: #{@owner_lock_path}" if owner_lock.nil? || owner_lock.closed?
+        if owner_lock.nil? || owner_lock.closed?
+          raise TransactionFailure,
+                "overlay transaction owner lock is not open: #{@owner_lock_path}"
+        end
         if @owner_lock_path.symlink? || !@owner_lock_path.file?
           raise TransactionFailure, "unsafe overlay transaction owner lock: #{@owner_lock_path}"
         end
@@ -365,7 +365,10 @@ module Homebrew
 
       sig { void }
       def prepare_replacement_rack!
-        raise TransactionFailure, "overlay replacement rack already exists: #{replacement_rack}" if replacement_rack.exist?
+        if replacement_rack.exist?
+          raise TransactionFailure,
+                "overlay replacement rack already exists: #{replacement_rack}"
+        end
 
         Overlay.ensure_owned_directory!(replacement_rack)
         replacement_rack.chmod 0700
@@ -422,7 +425,7 @@ module Homebrew
 
           contents.gsub!(old_prefix, new_prefix)
           file.ensure_writable do
-            File.open(file, "wb") { |io| io.write(contents) }
+            File.binwrite(file, contents)
           end
         end
 
@@ -440,9 +443,9 @@ module Homebrew
 
         unresolved = T.let([], T::Array[Pathname])
         keg.each_unique_file_matching(old_prefix) { |file| unresolved << file }
-        unless unresolved.empty?
-          raise TransactionFailure, "staging path remains after relocation: #{unresolved.first}"
-        end
+        return if unresolved.empty?
+
+        raise TransactionFailure, "staging path remains after relocation: #{unresolved.first}"
       end
 
       sig { void }
@@ -828,7 +831,7 @@ module Homebrew
     sig { returns(Pathname) }
     def self.base_prefix
       value = Homebrew::EnvConfig.overlay_base_prefix
-      if value.nil? || value.empty?
+      if value.blank?
         raise "HOMEBREW_OVERLAY_BASE_PREFIX is required for an active overlay"
       end
 
@@ -852,14 +855,14 @@ module Homebrew
 
     sig { params(version: String).returns(T::Boolean) }
     def self.valid_version_name?(version)
-      !version.empty? && version != "." && version != ".." && version.match?(/\A[^\/\0\r\n]+\z/)
+      !version.empty? && version != "." && version != ".." && version.match?(%r{\A[^/\0\r\n]+\z})
     end
 
     sig {
       params(
-        path: Pathname,
+        path:        Pathname,
         description: String,
-        max_bytes: Integer,
+        max_bytes:   Integer,
       ).returns(T.nilable(String))
     }
     def self.read_owned_file(path, description:, max_bytes:)
@@ -867,7 +870,7 @@ module Homebrew
       file = begin
         File.open(path, flags)
       rescue Errno::ENOENT
-        return nil
+        return
       rescue SystemCallError, IOError => e
         raise TransactionFailure, "unsafe #{description}: #{path} (#{e.message})"
       end
@@ -879,7 +882,7 @@ module Homebrew
         safe_descriptor = descriptor_stat.file? &&
                           descriptor_stat.uid == Process.uid &&
                           descriptor_stat.nlink == 1 &&
-                          (descriptor_stat.mode & 0022).zero? &&
+                          descriptor_stat.mode.nobits?(0022) &&
                           descriptor_stat.dev == path_stat.dev &&
                           descriptor_stat.ino == path_stat.ino
         unless safe_descriptor
@@ -960,6 +963,7 @@ module Homebrew
         if current.symlink? || (current.exist? && !current.directory?)
           raise TransactionFailure, "unsafe overlay directory component: #{current}"
         end
+
         current.mkdir unless current.directory?
         unless current.directory? && !current.symlink? && current.stat.uid == Process.uid && current.writable?
           raise TransactionFailure, "unowned or non-writable overlay directory: #{current}"
@@ -971,9 +975,9 @@ module Homebrew
 
     sig {
       params(
-        directory: Pathname,
+        directory:       Pathname,
         expected_device: T.nilable(Integer),
-        expected_inode: T.nilable(Integer),
+        expected_inode:  T.nilable(Integer),
       ).void
     }
     def self.fsync_directory!(directory, expected_device: nil, expected_inode: nil)
@@ -1030,6 +1034,7 @@ module Homebrew
           if path_stat.uid != Process.uid
             raise TransactionFailure, "unowned overlay durability directory: #{path}"
           end
+
           directories << [path, path_stat.dev, path_stat.ino]
           next
         elsif !path_stat.file?
@@ -1129,7 +1134,7 @@ module Homebrew
         descriptor_stat = file.stat
         path_stat = path.lstat
         safe_file = descriptor_stat.file? && descriptor_stat.uid == Process.uid && descriptor_stat.nlink == 1 &&
-                    (descriptor_stat.mode & 0022).zero? && path_stat.file? && path_stat.uid == Process.uid &&
+                    descriptor_stat.mode.nobits?(0022) && path_stat.file? && path_stat.uid == Process.uid &&
                     path_stat.nlink == 1 && descriptor_stat.dev == path_stat.dev &&
                     descriptor_stat.ino == path_stat.ino
         raise TransactionFailure, "unsafe overlay durability file: #{path}" unless safe_file
@@ -1337,10 +1342,10 @@ module Homebrew
       base_rack.directory? && !base_rack.symlink? && !local_realizations?(formula.name)
     end
 
-    sig do
+    sig {
       params(formula: T.untyped, base_generation: String)
         .returns(T.nilable(FormulaTransaction))
-    end
+    }
     def self.begin_formula_transaction(formula, base_generation:)
       return unless transaction_required?(formula)
 
@@ -1424,7 +1429,10 @@ module Homebrew
 
     sig { returns(String) }
     def self.current_base_generation
-      raise TransactionFailure, "administrator base generation is unavailable outside an active overlay" unless active?
+      unless active?
+        raise TransactionFailure,
+              "administrator base generation is unavailable outside an active overlay"
+      end
 
       script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
       generation = Utils.safe_popen_read(
@@ -1486,7 +1494,7 @@ module Homebrew
           rescue TransactionFailure
             nil
           end
-          drift << keg unless recorded == "#{current}\n"
+          drift << keg if recorded != "#{current}\n"
         end
       end
       drift
@@ -1498,6 +1506,7 @@ module Homebrew
       if existing && existing != transaction
         raise "another overlay install transaction is active for #{transaction.formula_name}"
       end
+
       @install_transactions[transaction.formula_name] = transaction
     end
 
@@ -1535,8 +1544,8 @@ module Homebrew
       transaction = @install_transactions[formula_name]
       return transaction.staging_rack if transaction
 
-      transaction_id = ENV["HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID"]
-      return if transaction_id.nil? || transaction_id.empty?
+      transaction_id = ENV.fetch("HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID", nil)
+      return if transaction_id.blank?
       unless active? && valid_formula_name?(formula_name) && transaction_id.match?(/\A[1-9][0-9]*-[0-9a-f]{24}\z/)
         raise TransactionFailure, "invalid overlay build transaction"
       end
@@ -1547,14 +1556,14 @@ module Homebrew
         description: "overlay transaction formula",
         max_bytes:   256,
       )
-      return unless recorded_formula == "#{formula_name}\n"
+      return if recorded_formula != "#{formula_name}\n"
 
       state = read_owned_file(
         transaction_dir/"state",
         description: "overlay transaction state",
         max_bytes:   32,
       )
-      unless state == "staging\n"
+      if state != "staging\n"
         raise TransactionFailure, "overlay build transaction does not match #{formula_name}"
       end
 
@@ -1708,7 +1717,7 @@ module Homebrew
 
       rack = HOMEBREW_CELLAR/formula_name
       keg = rack/version
-      unless rack.stat.uid == Process.uid && keg.stat.uid == Process.uid
+      if rack.stat.uid != Process.uid || keg.stat.uid != Process.uid
         raise TransactionFailure, "refusing to discard a local keg not owned by the current user: #{keg}"
       end
 
@@ -1750,7 +1759,7 @@ module Homebrew
       return real_keg_path unless active?
 
       real_keg_path = canonical_path(real_keg_path)
-      return real_keg_path unless real_keg_path.parent.parent == canonical_path(base_cellar)
+      return real_keg_path if real_keg_path.parent.parent != canonical_path(base_cellar)
 
       HOMEBREW_CELLAR/real_keg_path.parent.basename/real_keg_path.basename
     end
@@ -1797,7 +1806,7 @@ module Homebrew
         max_bytes:   MAX_MANAGED_STATE_BYTES,
       )
       entries = T.let({}, T::Hash[String, String])
-      unless contents.nil? || contents.empty?
+      if contents.present?
         unless contents.end_with?("\0")
           raise TransactionFailure, "invalid overlay view state: #{state}"
         end
@@ -1947,7 +1956,7 @@ module Homebrew
 
     sig {
       params(
-        finalize: T::Boolean,
+        finalize:          T::Boolean,
         owner_transaction: T.nilable(FormulaTransaction),
       ).returns([T::Hash[String, T.nilable(String)], T::Hash[T.untyped, T.untyped]])
     }
