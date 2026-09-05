@@ -46,7 +46,7 @@ test ! -e "${prefix}/Cellar/no-keg"
 # The owning failure cleanup must reconcile the empty change, clear the marker,
 # and release the descriptor when the Ruby process closes it.
 HOMEBREW_OVERLAY_MUTATION_LOCK_FD=20 \
-HOMEBREW_OVERLAY_FINALIZE_MUTATION=1 \
+  HOMEBREW_OVERLAY_FINALIZE_MUTATION=1 \
   homebrew-overlay-sync --force
 test ! -e "${dirty_file}"
 exec 20>&-

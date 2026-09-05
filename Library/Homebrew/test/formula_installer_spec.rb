@@ -115,11 +115,11 @@ RSpec.describe FormulaInstaller do
 
       allow(installer).to receive_messages(
         check_conflicts: nil,
-        ignore_deps?:   true,
-        lock:           nil,
-        only_deps?:     false,
-        pour_bottle?:   true,
-        quiet?:         true,
+        ignore_deps?:    true,
+        lock:            nil,
+        only_deps?:      false,
+        pour_bottle?:    true,
+        quiet?:          true,
       )
       allow(Homebrew::EnvConfig).to receive(:overlay?).and_return(true)
       allow(Homebrew::Overlay).to receive_messages(
