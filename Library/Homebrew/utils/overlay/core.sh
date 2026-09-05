@@ -20,6 +20,8 @@ homebrew-overlay-truthy() {
 }
 
 homebrew-overlay-expand-home() {
+  # Match a literal tilde; expansion happens only in the emitted path.
+  # shellcheck disable=SC2088
   case "$1" in
     "~") printf '%s\n' "${HOME}" ;;
     "~/"*) printf '%s/%s\n' "${HOME}" "${1#\~/}" ;;
@@ -92,14 +94,14 @@ homebrew-overlay-mutation-lock-file() {
 homebrew-overlay-lock-path-valid() {
   local lock_file="$1"
   local expected_owner="$2"
-  local owner links mode device inode
+  local owner links mode
 
   [[ -f "${lock_file}" && ! -L "${lock_file}" && -r "${lock_file}" ]] || return 1
-  read -r owner links mode device inode < <(
-    stat -Lc '%u %h %f %d %i' -- "${lock_file}"
+  read -r owner links mode < <(
+    stat -Lc '%u %h %f' -- "${lock_file}"
   ) || return 1
   [[ "${owner}" == "${expected_owner}" && "${links}" == 1 ]] || return 1
-  (( (16#${mode} & 0170000) == 0100000 && (16#${mode} & 0022) == 0 ))
+  (((16#${mode} & 0170000) == 0100000 && (16#${mode} & 0022) == 0))
 }
 
 homebrew-overlay-lock-fd-valid() {
@@ -112,7 +114,7 @@ homebrew-overlay-lock-fd-valid() {
   local fd_owner fd_links fd_mode fd_device fd_inode
 
   [[ -f "${lock_file}" && ! -L "${lock_file}" && -r "${lock_file}" &&
-     -e "${fd_path}" ]] || return 1
+    -e "${fd_path}" ]] || return 1
   mapfile -t metadata < <(
     stat -Lc '%u %h %f %d %i' -- "${lock_file}" "${fd_path}"
   ) || return 1
@@ -120,14 +122,14 @@ homebrew-overlay-lock-fd-valid() {
   read -r path_owner path_links path_mode path_device path_inode <<<"${metadata[0]}" || return 1
   read -r fd_owner fd_links fd_mode fd_device fd_inode <<<"${metadata[1]}" || return 1
   [[ "${path_owner}" == "${expected_owner}" && "${path_links}" == 1 &&
-     "${path_owner}" == "${fd_owner}" && "${path_links}" == "${fd_links}" &&
-     "${path_mode}" == "${fd_mode}" && "${path_device}" == "${fd_device}" &&
-     "${path_inode}" == "${fd_inode}" ]] || return 1
-  (( (16#${path_mode} & 0170000) == 0100000 && (16#${path_mode} & 0022) == 0 ))
+    "${path_owner}" == "${fd_owner}" && "${path_links}" == "${fd_links}" &&
+    "${path_mode}" == "${fd_mode}" && "${path_device}" == "${fd_device}" &&
+    "${path_inode}" == "${fd_inode}" ]] || return 1
+  (((16#${path_mode} & 0170000) == 0100000 && (16#${path_mode} & 0022) == 0))
 }
 
 homebrew-overlay-lock-fd-number-valid() {
-  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 10 && $1 <= 1023 ))
+  [[ "$1" =~ ^[0-9]+$ ]] && (($1 >= 10 && $1 <= 1023))
 }
 
 homebrew-overlay-inherited-lock-fd-valid() {
@@ -159,7 +161,11 @@ homebrew-overlay-prepare-mutation-lock() {
   homebrew-overlay-safe-mkdir "${prefix}" "${lock_file%/*}" || return 1
   if [[ ! -e "${lock_file}" && ! -L "${lock_file}" ]]
   then
-    (umask 027; set -o noclobber; : >"${lock_file}") 2>/dev/null || true
+    (
+      umask 027
+      set -o noclobber
+      : >"${lock_file}"
+    ) 2>/dev/null || true
   fi
   owner="${EUID}"
   homebrew-overlay-lock-path-valid "${lock_file}" "${owner}" || {
@@ -179,7 +185,11 @@ homebrew-overlay-prepare-sync-lock() {
   homebrew-overlay-safe-mkdir "${prefix}" "${lock_file%/*}" || return 1
   if [[ ! -e "${lock_file}" && ! -L "${lock_file}" ]]
   then
-    (umask 027; set -o noclobber; : >"${lock_file}") 2>/dev/null || true
+    (
+      umask 027
+      set -o noclobber
+      : >"${lock_file}"
+    ) 2>/dev/null || true
   fi
   owner="${EUID}"
   homebrew-overlay-lock-path-valid "${lock_file}" "${owner}" || {
@@ -198,7 +208,7 @@ homebrew-overlay-existing-base-mutation-lock() {
   base_owner="$(stat -Lc '%u' -- "${base_prefix}")" || return 1
   lock_file="$(homebrew-overlay-mutation-lock-file "${base_prefix}")" || return 1
   if [[ ! -e "${lock_file}" && ! -L "${lock_file}" &&
-        -O "${base_prefix}" && -w "${base_prefix}" ]]
+     -O "${base_prefix}" && -w "${base_prefix}" ]]
   then
     # Same-owner development and test prefixes can provision their own lock.
     # A separately owned administrator prefix still requires its owner to run
@@ -275,7 +285,7 @@ homebrew-overlay-read-line() {
     exec {file_fd}>&-
     return 1
   }
-  [[ "${byte_count}" -eq $(( ${#value} + 1 )) && "${byte_count}" -le "${max_bytes}" ]] || {
+  [[ "${byte_count}" -eq $((${#value} + 1)) && "${byte_count}" -le "${max_bytes}" ]] || {
     exec {file_fd}>&-
     return 1
   }
@@ -424,7 +434,7 @@ homebrew-overlay-prefix-owned-and-writable() {
 homebrew-overlay-prefix-writable() {
   local prefix="$1"
   [[ -d "${prefix}" && ! -L "${prefix}" && -w "${prefix}" ]] || return 1
-  [[ ! -e "${prefix}/Cellar" || ( -d "${prefix}/Cellar" && ! -L "${prefix}/Cellar" && -w "${prefix}/Cellar" ) ]]
+  [[ ! -e "${prefix}/Cellar" || (-d "${prefix}/Cellar" && ! -L "${prefix}/Cellar" && -w "${prefix}/Cellar") ]]
 }
 
 homebrew-overlay-default-user-prefix() {
@@ -432,7 +442,7 @@ homebrew-overlay-default-user-prefix() {
 }
 
 homebrew-overlay-safe-mkdir() {
-  local prefix directory relative component current owner
+  local prefix directory relative component current parent
   local -a components=()
 
   prefix="$(homebrew-overlay-normalize-absolute "$1")" || return 1
@@ -449,14 +459,16 @@ homebrew-overlay-safe-mkdir() {
   IFS=/ read -r -a components <<<"${relative}"
   for component in "${components[@]}"
   do
+    parent="${current}"
     current="${current}/${component}"
-    if [[ -L "${current}" || ( -e "${current}" && ! -d "${current}" ) ]]
+    if [[ -L "${current}" || (-e "${current}" && ! -d "${current}") ]]
     then
       return 1
     fi
     if [[ ! -d "${current}" ]]
     then
       mkdir -- "${current}" || return 1
+      homebrew-overlay-fsync-directory "${parent}" || return 1
     fi
     [[ -O "${current}" && -w "${current}" ]] || return 1
   done
@@ -531,7 +543,7 @@ homebrew-overlay-move-durable() {
 
   [[ -d "${source_parent}" && ! -L "${source_parent}" && -O "${source_parent}" && -w "${source_parent}" ]] || return 1
   [[ -d "${destination_parent}" && ! -L "${destination_parent}" &&
-     -O "${destination_parent}" && -w "${destination_parent}" ]] || return 1
+    -O "${destination_parent}" && -w "${destination_parent}" ]] || return 1
   mv -T -- "${source}" "${destination}" || return 1
   homebrew-overlay-fsync-directory "${source_parent}" || return 1
   if [[ "${destination_parent}" != "${source_parent}" ]]
@@ -760,7 +772,7 @@ homebrew-overlay-write-prefix-config() {
 
   [[ "${prefix}" != *$'\n'* && "${base_prefix}" != *$'\n'* ]] || return 1
   homebrew-overlay-safe-mkdir "${prefix}" "${environment_file%/*}" || return 1
-  if [[ -L "${environment_file}" || ( -e "${environment_file}" && ! -f "${environment_file}" ) ]]
+  if [[ -L "${environment_file}" || (-e "${environment_file}" && ! -f "${environment_file}") ]]
   then
     echo "Error: refusing to replace unsafe Homebrew overlay configuration: ${environment_file}" >&2
     return 1
@@ -778,6 +790,23 @@ EOF_ENV
 homebrew-overlay-initialize-prefix() {
   local base_prefix repository prefix brew_link brew_target marker existing_base=""
   local directory
+  local -a overlay_directories=(
+    bin
+    Caskroom
+    Cellar
+    etc/homebrew
+    Frameworks
+    include
+    lib
+    opt
+    sbin
+    share
+    var/homebrew/linked
+    var/homebrew/locks
+    var/homebrew/overlay/transactions
+    var/homebrew/overlay/transactions/.locks
+    var/homebrew/overlay/sync
+  )
 
   base_prefix="$(homebrew-overlay-normalize-absolute "$1")" || {
     echo "Error: administrator overlay prefix must be absolute" >&2
@@ -812,7 +841,7 @@ homebrew-overlay-initialize-prefix() {
     return 1
   fi
 
-  if [[ -L "${prefix}" || ( -e "${prefix}" && ! -d "${prefix}" ) ]]
+  if [[ -L "${prefix}" || (-e "${prefix}" && ! -d "${prefix}") ]]
   then
     echo "Error: user overlay prefix is not a real directory: ${prefix}" >&2
     return 1
@@ -820,17 +849,15 @@ homebrew-overlay-initialize-prefix() {
 
   if [[ ! -d "${prefix}" ]]
   then
-    mkdir -m 0700 -p -- "${prefix}" || return 1
+    mkdir -p -- "${prefix}" || return 1
+    chmod 0700 -- "${prefix}" || return 1
   fi
   homebrew-overlay-prefix-owned-and-writable "${prefix}" || {
     echo "Error: user overlay prefix must be owned and writable by uid $(id -u): ${prefix}" >&2
     return 1
   }
 
-  for directory in \
-    bin Caskroom Cellar etc/homebrew Frameworks include lib opt sbin share \
-    var/homebrew/linked var/homebrew/locks var/homebrew/overlay/transactions \
-    var/homebrew/overlay/transactions/.locks var/homebrew/overlay/sync
+  for directory in "${overlay_directories[@]}"
   do
     homebrew-overlay-safe-mkdir "${prefix}" "${prefix}/${directory}" || {
       echo "Error: unsafe path inside user overlay prefix: ${prefix}/${directory}" >&2
@@ -880,7 +907,7 @@ homebrew-overlay-initialize-prefix() {
 }
 
 homebrew-overlay-state-file() {
-  printf '%s\n' "${HOMEBREW_PREFIX}/var/homebrew/overlay/view.state"
+  printf '%s\n' "${HOMEBREW_PREFIX:?HOMEBREW_PREFIX is required}/var/homebrew/overlay/view.state"
 }
 
 homebrew-overlay-record-pair() {
@@ -899,8 +926,8 @@ homebrew-overlay-view-pair-valid() {
   local remainder formula version
 
   [[ "${base_prefix}" == /* &&
-     "${base_prefix}" != *$'\n'* &&
-     "${base_prefix}" != *$'\r'* ]] || return 1
+    "${base_prefix}" != *$'\n'* &&
+    "${base_prefix}" != *$'\r'* ]] || return 1
   homebrew-overlay-valid-relative-path "${relative}" || return 1
   [[ "${target}" == "${base_prefix}/${relative}" ]] || return 1
 
@@ -1066,6 +1093,8 @@ homebrew-overlay-load-state() {
       return 1
     }
     exec {digest_fd}>&-
+    # Assigned through a caller-owned nameref; ShellCheck cannot see that use.
+    # shellcheck disable=SC2034
     output_digest="${digest}"
   fi
   exec {file_fd}>&-
@@ -1164,6 +1193,8 @@ homebrew-overlay-discover-managed-view() {
   local user_cellar="${prefix}/Cellar"
   local entry child name version relative expected namespace root listing target kind
   local link_index
+  # The caller supplies an associative array; ShellCheck cannot infer the nameref type.
+  # shellcheck disable=SC2178
   local -n output_map="${array_name}"
   local -a cellar_entries=(
     "${user_cellar}"/*
@@ -1192,6 +1223,8 @@ homebrew-overlay-discover-managed-view() {
           return 1
         }
         continue
+        ;;
+      *)
         ;;
     esac
 
@@ -1613,6 +1646,8 @@ homebrew-overlay-base-generation() {
   base_lock="$(homebrew-overlay-existing-base-mutation-lock "${base_prefix}")" || return 1
   base_owner="$(stat -Lc '%u' -- "${base_prefix}")" || return 1
 
+  # The child validates the same lock path whose descriptor it inherits.
+  # shellcheck disable=SC2094
   (
     homebrew-overlay-lock-fd-valid 7 "${base_lock}" "${base_owner}" || {
       echo "Error: unsafe administrator Homebrew mutation lock descriptor" >&2
@@ -1639,7 +1674,7 @@ homebrew-overlay-update-base-drift() {
   homebrew-overlay-safe-mkdir "${prefix}" "${state_dir}" || return 1
   for marker in "${state_file}" "${warned_file}"
   do
-    if [[ -L "${marker}" || ( -e "${marker}" && ! -f "${marker}" ) ]]
+    if [[ -L "${marker}" || (-e "${marker}" && ! -f "${marker}") ]]
     then
       echo "Error: unsafe base-generation drift state: ${marker}" >&2
       return 1
@@ -1746,7 +1781,7 @@ homebrew-overlay-recover-sync() {
     return 1
   }
   [[ -f "${desired}" && ! -L "${desired}" && -O "${desired}" &&
-     "$(stat -Lc '%h' -- "${desired}")" == 1 ]] || {
+    "$(stat -Lc '%h' -- "${desired}")" == 1 ]] || {
     echo "Error: unsafe overlay synchronization transaction payload: ${desired}" >&2
     return 1
   }
@@ -1769,6 +1804,8 @@ homebrew-overlay-remove-version-links() {
       rm -f -- "${listing}"
       return 1
     }
+    # The listing is removed only on error or after the read completes.
+    # shellcheck disable=SC2094
     while IFS= read -r -d '' link
     do
       resolved="$(readlink -f -- "${link}" 2>/dev/null || true)"
@@ -1869,7 +1906,7 @@ homebrew-overlay-recover-formula-transactions() {
   local replacement_parent="${prefix}/Cellar/.homebrew-overlay-racks"
   local failed_parent="${prefix}/Cellar/.homebrew-overlay-failed"
   local transaction pending_name id formula version state base_generation base_rack local_rack final_version
-  local staging_root staging_version replacement_root replacement_rack replacement_version
+  local staging_root replacement_root replacement_rack replacement_version
   local failed_root failed_rack failed_version final_marker replacement_marker failed_marker
   local base_generation_marker recorded_generation final_marker_id replacement_marker_id failed_marker_id
   local owner_lock owner_lock_fd lock_dir cleanup_parent
@@ -1911,7 +1948,11 @@ homebrew-overlay-recover-formula-transactions() {
     owner_lock="${lock_dir}/${id}.lock"
     if [[ ! -e "${owner_lock}" && ! -L "${owner_lock}" ]]
     then
-      (umask 077; set -o noclobber; : >"${owner_lock}") 2>/dev/null || true
+      (
+        umask 077
+        set -o noclobber
+        : >"${owner_lock}"
+      ) 2>/dev/null || true
     fi
     homebrew-overlay-lock-path-valid "${owner_lock}" "${EUID}" || {
       echo "Error: unsafe pending overlay transaction owner lock: ${owner_lock}" >&2
@@ -1963,7 +2004,11 @@ homebrew-overlay-recover-formula-transactions() {
     homebrew-overlay-safe-mkdir "${prefix}" "${owner_lock%/*}" || return 1
     if [[ ! -e "${owner_lock}" && ! -L "${owner_lock}" ]]
     then
-      (umask 077; set -o noclobber; : >"${owner_lock}") 2>/dev/null || true
+      (
+        umask 077
+        set -o noclobber
+        : >"${owner_lock}"
+      ) 2>/dev/null || true
     fi
     homebrew-overlay-lock-path-valid "${owner_lock}" "${EUID}" || {
       echo "Error: unsafe overlay transaction owner lock: ${owner_lock}" >&2
@@ -1987,9 +2032,9 @@ homebrew-overlay-recover-formula-transactions() {
     HOMEBREW_OVERLAY_FORMULA_RECOVERED=1
 
     [[ -f "${transaction}/formula" && ! -L "${transaction}/formula" &&
-       -f "${transaction}/version" && ! -L "${transaction}/version" &&
-       -f "${transaction}/base_generation" && ! -L "${transaction}/base_generation" &&
-       -f "${transaction}/state" && ! -L "${transaction}/state" ]] || {
+      -f "${transaction}/version" && ! -L "${transaction}/version" &&
+      -f "${transaction}/base_generation" && ! -L "${transaction}/base_generation" &&
+      -f "${transaction}/state" && ! -L "${transaction}/state" ]] || {
       echo "Error: incomplete overlay formula transaction: ${transaction}" >&2
       return 1
     }
@@ -2018,7 +2063,6 @@ homebrew-overlay-recover-formula-transactions() {
     local_rack="${prefix}/Cellar/${formula}"
     final_version="${local_rack}/${version}"
     staging_root="${staging_parent}/${id}"
-    staging_version="${staging_root}/${formula}/${version}"
     replacement_root="${replacement_parent}/${id}"
     replacement_rack="${replacement_root}/${formula}"
     replacement_version="${replacement_rack}/${version}"
@@ -2113,7 +2157,7 @@ homebrew-overlay-recover-formula-transactions() {
         # Commit is the durability boundary: keep the published local rack only
         # when it carries the exact lower-prefix generation from the journal.
         [[ -d "${local_rack}" && ! -L "${local_rack}" &&
-           -d "${final_version}" && ! -L "${final_version}" ]] || {
+          -d "${final_version}" && ! -L "${final_version}" ]] || {
           echo "Error: committed overlay formula rack is missing: ${local_rack}" >&2
           return 1
         }
@@ -2322,8 +2366,8 @@ homebrew-overlay-recover-reinstall-backups() {
       if [[ "${state}" == committed ]]
       then
         [[ -f "${root}/committed_base_generation" && ! -L "${root}/committed_base_generation" &&
-           -f "${root}/committed_device" && ! -L "${root}/committed_device" &&
-           -f "${root}/committed_inode" && ! -L "${root}/committed_inode" ]] || {
+          -f "${root}/committed_device" && ! -L "${root}/committed_device" &&
+          -f "${root}/committed_inode" && ! -L "${root}/committed_inode" ]] || {
           echo "Error: incomplete committed overlay reinstall metadata: ${root}" >&2
           exec {owner_fd}>&-
           return 1
@@ -2563,7 +2607,7 @@ homebrew-overlay-sync-unlocked() {
 
   base_key="$(homebrew-overlay-view-key "${base_prefix}")" || return 1
   local_key="$(homebrew-overlay-view-key "${prefix}")" || return 1
-  if [[ "${force}" -eq 0 && ( -e "${stamp_file}" || -L "${stamp_file}" ) ]]
+  if [[ "${force}" -eq 0 && (-e "${stamp_file}" || -L "${stamp_file}") ]]
   then
     homebrew-overlay-read-lines "${stamp_file}" "${EUID}" 1024 stamp_lines || {
       echo "Error: unsafe overlay view stamp: ${stamp_file}" >&2
@@ -2578,7 +2622,7 @@ homebrew-overlay-sync-unlocked() {
          homebrew-overlay-base-generation-valid "${old_state_digest}"
       then
         if homebrew-overlay-fast-view-current \
-          "${prefix}" "${base_prefix}" "${state_file}" "${old_state_digest}"
+           "${prefix}" "${base_prefix}" "${state_file}" "${old_state_digest}"
         then
           status=0
         else
@@ -2615,7 +2659,7 @@ homebrew-overlay-sync-unlocked() {
     return 1
   }
   [[ ! -e "${transaction_state}" && ! -L "${transaction_state}" &&
-     ! -e "${transaction_desired}" && ! -L "${transaction_desired}" ]] || {
+    ! -e "${transaction_desired}" && ! -L "${transaction_desired}" ]] || {
     rm -f -- "${desired}"
     echo "Error: overlay synchronization transaction was not recovered" >&2
     return 1
@@ -2636,7 +2680,7 @@ homebrew-overlay-sync-unlocked() {
   # remove the dirty marker. A live owner reaches this point only through its
   # inherited lock-owning descriptor.
   if [[ "${local_dirty}" -eq 1 &&
-        ( "${finalize_mutation}" -eq 1 || -z "${HOMEBREW_OVERLAY_MUTATION_LOCK_FD:-}" ) ]]
+     ("${finalize_mutation}" -eq 1 || -z "${HOMEBREW_OVERLAY_MUTATION_LOCK_FD:-}") ]]
   then
     local_key="$(homebrew-overlay-recover-generation "${prefix}")" || return 1
   fi
@@ -2681,6 +2725,8 @@ homebrew-overlay-sync() {
     echo "Error: active Homebrew overlays require flock from util-linux" >&2
     return 1
   }
+  # The synchronizer validates the same base-lock path whose descriptor it inherits.
+  # shellcheck disable=SC2094
   (
     local mutation_fd="" owner_lock transactions
     homebrew-overlay-lock-fd-valid 7 "${base_lock}" "${base_owner}" || {
@@ -2790,7 +2836,8 @@ homebrew-overlay-bootstrap() {
   base_prefix="$(homebrew-overlay-normalize-absolute \
     "$(homebrew-overlay-expand-home "${HOMEBREW_OVERLAY_BASE_PREFIX:-${HOMEBREW_PREFIX}}")")" || return 1
   user_prefix="$(homebrew-overlay-default-user-prefix)" || return 1
-  user_prefix="$(homebrew-overlay-initialize-prefix "${base_prefix}" "${HOMEBREW_REPOSITORY}" "${user_prefix}")" || return 1
+  user_prefix="$(homebrew-overlay-initialize-prefix \
+    "${base_prefix}" "${HOMEBREW_REPOSITORY:?HOMEBREW_REPOSITORY is required}" "${user_prefix}")" || return 1
 
   export HOMEBREW_OVERLAY_ACTIVE=1
   export HOMEBREW_OVERLAY_BASE_PREFIX="${base_prefix}"

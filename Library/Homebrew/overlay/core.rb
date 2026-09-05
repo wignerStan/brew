@@ -148,6 +148,7 @@ module Homebrew
         staging_rack.chmod 0700
         Overlay.register_transaction(self)
         self
+      # Cleanup must also restore durable state for Interrupt and SystemExit.
       rescue Exception # rubocop:disable Lint/RescueException
         Overlay.unregister_transaction(formula_name, self)
         begin
@@ -161,7 +162,12 @@ module Homebrew
       sig { void }
       def publish!
         return if @published
-        unless staging_version.directory? && !staging_version.symlink? && staging_version.children.any?
+
+        valid_staging_version =
+          staging_version.directory? &&
+          !staging_version.symlink? &&
+          staging_version.children.any?
+        unless valid_staging_version
           raise TransactionFailure, "staged formula version is missing or empty: #{staging_version}"
         end
 
@@ -175,6 +181,7 @@ module Homebrew
         @published = true
         Overlay.unregister_transaction(formula_name, self)
         Overlay.clear_caches!
+      # Cleanup must also restore durable state for Interrupt and SystemExit.
       rescue Exception # rubocop:disable Lint/RescueException
         rollback!
         raise
@@ -260,11 +267,11 @@ module Homebrew
         end
 
         flags = File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW
-        owner_lock = File.open(@owner_lock_path, flags, 0600)
+        owner_lock = Overlay.open_retained_file(@owner_lock_path, flags, mode: 0600)
         @owner_lock = owner_lock
-        owner_lock.close_on_exec = true
         stat = owner_lock.stat
-        unless stat.file? && stat.uid == Process.uid && stat.nlink == 1
+        safe_lock = stat.file? && stat.uid == Process.uid && stat.nlink == 1
+        unless safe_lock
           raise TransactionFailure, "unsafe overlay transaction owner lock: #{@owner_lock_path}"
         end
         return if owner_lock.flock(File::LOCK_EX | File::LOCK_NB)
@@ -303,11 +310,12 @@ module Homebrew
 
         descriptor_stat = owner_lock.stat
         path_stat = @owner_lock_path.lstat
-        unless descriptor_stat.file? && descriptor_stat.uid == Process.uid && descriptor_stat.nlink == 1 &&
-               path_stat.file? && path_stat.uid == Process.uid && path_stat.nlink == 1 &&
-               descriptor_stat.dev == path_stat.dev && descriptor_stat.ino == path_stat.ino
-          raise TransactionFailure, "unsafe overlay transaction owner lock: #{@owner_lock_path}"
-        end
+        safe_lock = descriptor_stat.file? && descriptor_stat.uid == Process.uid && descriptor_stat.nlink == 1 &&
+                    path_stat.file? && path_stat.uid == Process.uid && path_stat.nlink == 1 &&
+                    descriptor_stat.dev == path_stat.dev && descriptor_stat.ino == path_stat.ino
+        return if safe_lock
+
+        raise TransactionFailure, "unsafe overlay transaction owner lock: #{@owner_lock_path}"
       end
 
       sig { params(directory: Pathname, name: String, value: String, exclusive: T::Boolean).void }
@@ -374,7 +382,8 @@ module Homebrew
         replacement_rack.chmod 0700
         base_rack = Overlay.base_cellar/formula_name
         base_rack.children.each do |base_version|
-          next unless base_version.directory? && !base_version.symlink?
+          real_base_version = base_version.directory? && !base_version.symlink?
+          next unless real_base_version
           next if base_version.basename.to_s == version
 
           File.symlink(base_version, replacement_rack/base_version.basename)
@@ -434,7 +443,9 @@ module Homebrew
 
           target = path.readlink
           next unless target.absolute?
-          next unless target.to_s == old_prefix || target.to_s.start_with?("#{old_prefix}/")
+
+          staged_prefix_target = target.to_s == old_prefix || target.to_s.start_with?("#{old_prefix}/")
+          next unless staged_prefix_target
 
           replacement = target.to_s.sub(/\A#{Regexp.escape(old_prefix)}/, new_prefix)
           path.unlink
@@ -536,6 +547,7 @@ module Homebrew
         Overlay.register_reinstall_backup(self)
         self
       # Rescue Exception intentionally so recovery runs before non-StandardError interrupts are re-raised.
+      # Cleanup must also restore durable state for Interrupt and SystemExit.
       rescue Exception # rubocop:disable Lint/RescueException
         begin
           if backup_version.directory? && !backup_version.symlink? &&
@@ -713,11 +725,7 @@ module Homebrew
       sig { void }
       def acquire_owner_lock!
         flags = File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW
-        # This descriptor is intentionally retained until the reinstall backup is finalized.
-        # rubocop:disable Style/AutoResourceCleanup, Style/FileOpen
-        lock = File.open(@owner_lock_path, flags, 0600)
-        # rubocop:enable Style/AutoResourceCleanup, Style/FileOpen
-        lock.close_on_exec = true
+        lock = Overlay.open_retained_file(@owner_lock_path, flags, mode: 0600)
         stat = lock.stat
         safe_lock = stat.file? && stat.uid == Process.uid && stat.nlink == 1
         unless safe_lock
@@ -858,6 +866,25 @@ module Homebrew
       !version.empty? && version != "." && version != ".." && version.match?(%r{\A[^/\0\r\n]+\z})
     end
 
+    sig { params(path: Pathname, flags: Integer, mode: T.nilable(Integer)).returns(File) }
+    def self.open_retained_file(path, flags, mode: nil)
+      retained = T.let(nil, T.nilable(File))
+      completed = false
+      begin
+        retained = if mode.nil?
+          File.open(path, flags, &:dup)
+        else
+          File.open(path, flags, mode, &:dup)
+        end
+        descriptor = retained
+        descriptor.close_on_exec = true
+        completed = true
+        descriptor
+      ensure
+        retained.close if !completed && retained && !retained.closed?
+      end
+    end
+
     sig {
       params(
         path:        Pathname,
@@ -868,12 +895,11 @@ module Homebrew
     def self.read_owned_file(path, description:, max_bytes:)
       flags = File::RDONLY | File::NOFOLLOW
       file = begin
-        File.open(path, flags)
+        open_retained_file(path, flags)
       rescue Errno::ENOENT
-        return
-      rescue SystemCallError, IOError => e
-        raise TransactionFailure, "unsafe #{description}: #{path} (#{e.message})"
+        nil
       end
+      return if file.nil?
 
       begin
         file.binmode
@@ -885,9 +911,7 @@ module Homebrew
                           descriptor_stat.mode.nobits?(0022) &&
                           descriptor_stat.dev == path_stat.dev &&
                           descriptor_stat.ino == path_stat.ino
-        unless safe_descriptor
-          raise TransactionFailure, "unsafe #{description}: #{path}"
-        end
+        raise TransactionFailure, "unsafe #{description}: #{path}" unless safe_descriptor
         if descriptor_stat.size > max_bytes
           raise TransactionFailure, "oversized #{description}: #{path}"
         end
@@ -909,19 +933,20 @@ module Homebrew
                       final_descriptor_stat.mode == final_path_stat.mode &&
                       final_descriptor_stat.uid == final_path_stat.uid &&
                       final_descriptor_stat.nlink == final_path_stat.nlink
-        unless stable_descriptor && stable_path && contents.bytesize == descriptor_stat.size &&
-               contents.bytesize <= max_bytes
-          raise TransactionFailure, "changed #{description} while reading: #{path}"
-        end
+        stable_read = stable_descriptor &&
+                      stable_path &&
+                      contents.bytesize == descriptor_stat.size &&
+                      contents.bytesize <= max_bytes
+        raise TransactionFailure, "changed #{description} while reading: #{path}" unless stable_read
 
         contents
-      rescue TransactionFailure
-        raise
-      rescue SystemCallError, IOError => e
-        raise TransactionFailure, "unsafe #{description}: #{path} (#{e.message})"
       ensure
         file.close unless file.closed?
       end
+    rescue TransactionFailure
+      raise
+    rescue SystemCallError, IOError => e
+      raise TransactionFailure, "unsafe #{description}: #{path} (#{e.message})"
     end
 
     sig { params(path: Pathname).returns(Pathname) }
@@ -939,15 +964,14 @@ module Homebrew
     end
 
     # Create a private internal directory without following any symlinked
-    # component below the native prefix. Existing ancestors must remain real,
-    # writable directories owned by the current user.
+    # component below the native prefix. Every new directory entry is published
+    # by fsyncing its already-validated parent before deeper paths are created.
     sig { params(directory: Pathname).void }
     def self.ensure_owned_directory!(directory)
       prefix = HOMEBREW_PREFIX.expand_path
       directory = directory.expand_path
-      unless prefix.directory? && !prefix.symlink? && prefix.stat.uid == Process.uid && prefix.writable?
-        raise TransactionFailure, "unsafe or non-writable Homebrew overlay prefix: #{prefix}"
-      end
+      safe_prefix = prefix.directory? && !prefix.symlink? && prefix.stat.uid == Process.uid && prefix.writable?
+      raise TransactionFailure, "unsafe or non-writable Homebrew overlay prefix: #{prefix}" unless safe_prefix
       unless path_under?(directory, prefix)
         raise TransactionFailure, "overlay directory escapes the native prefix: #{directory}"
       end
@@ -955,17 +979,27 @@ module Homebrew
       relative = directory.relative_path_from(prefix)
       current = prefix
       relative.each_filename do |component|
-        if component.empty? || component == "." || component == ".."
-          raise TransactionFailure, "invalid overlay directory component: #{directory}"
-        end
+        valid_component = !component.empty? && component != "." && component != ".."
+        raise TransactionFailure, "invalid overlay directory component: #{directory}" unless valid_component
 
+        parent = current
         current /= component
         if current.symlink? || (current.exist? && !current.directory?)
           raise TransactionFailure, "unsafe overlay directory component: #{current}"
         end
 
-        current.mkdir unless current.directory?
-        unless current.directory? && !current.symlink? && current.stat.uid == Process.uid && current.writable?
+        unless current.directory?
+          parent_stat = parent.lstat
+          safe_parent = parent_stat.directory? && !parent.symlink? &&
+                        parent_stat.uid == Process.uid && parent.writable?
+          raise TransactionFailure, "unsafe overlay directory parent: #{parent}" unless safe_parent
+
+          current.mkdir
+          fsync_directory!(parent, expected_device: parent_stat.dev, expected_inode: parent_stat.ino)
+        end
+        safe_directory = current.directory? && !current.symlink? &&
+                         current.stat.uid == Process.uid && current.writable?
+        unless safe_directory
           raise TransactionFailure, "unowned or non-writable overlay directory: #{current}"
         end
       end
@@ -1021,7 +1055,8 @@ module Homebrew
     def self.fsync_tree!(root)
       root = root.expand_path
       root_stat = root.lstat
-      unless root_stat.directory? && root_stat.uid == Process.uid
+      condition_met = root_stat.directory? && root_stat.uid == Process.uid
+      unless condition_met
         raise TransactionFailure, "unsafe overlay durability tree: #{root}"
       end
 
@@ -1141,7 +1176,8 @@ module Homebrew
 
         path.unlink
         fsync_directory!(path.parent)
-        unless file.stat.nlink.zero? && !path.exist? && !path.symlink?
+        removed = file.stat.nlink.zero? && !path.exist? && !path.symlink?
+        unless removed
           raise TransactionFailure, "changed overlay durability file while removing: #{path}"
         end
       end
@@ -1222,7 +1258,8 @@ module Homebrew
 
     sig { params(path: T.any(Pathname, String)).returns(T::Boolean) }
     def self.inherited_path?(path)
-      return false unless active? && base_cellar.directory?
+      condition_met = active? && base_cellar.directory?
+      return false unless condition_met
 
       path_under?(canonical_path(Pathname(path)), canonical_path(base_cellar))
     end
@@ -1247,7 +1284,8 @@ module Homebrew
 
     sig { params(rack: Pathname).returns(T::Boolean) }
     def self.inherited_rack?(rack)
-      return false unless active? && rack.directory?
+      condition_met = active? && rack.directory?
+      return false unless condition_met
       return inherited_path?(rack) if rack.symlink?
 
       children = rack.children.reject { |child| child.basename.to_s.start_with?(".") }
@@ -1286,7 +1324,8 @@ module Homebrew
 
     sig { params(formula_name: String, version: String).returns(T::Boolean) }
     def self.local_keg_realization?(formula_name, version)
-      return false unless active? && valid_formula_name?(formula_name) && valid_version_name?(version)
+      condition_met = active? && valid_formula_name?(formula_name) && valid_version_name?(version)
+      return false unless condition_met
 
       rack = HOMEBREW_CELLAR/formula_name
       keg = rack/version
@@ -1296,7 +1335,8 @@ module Homebrew
     sig { params(formula_name: String).returns(T::Boolean) }
     def self.local_realizations?(formula_name)
       rack = HOMEBREW_CELLAR/formula_name
-      return false unless rack.directory? && !rack.symlink?
+      condition_met = rack.directory? && !rack.symlink?
+      return false unless condition_met
 
       rack.children.any? do |child|
         !child.symlink? && child.directory? && !child.basename.to_s.start_with?(".")
@@ -1305,10 +1345,12 @@ module Homebrew
 
     sig { params(formula_name: String).returns(T.nilable(Pathname)) }
     def self.base_rack(formula_name)
-      return unless active? && valid_formula_name?(formula_name)
+      condition_met = active? && valid_formula_name?(formula_name)
+      return unless condition_met
 
       rack = base_cellar/formula_name
-      return unless rack.directory? && !rack.symlink?
+      condition_met = rack.directory? && !rack.symlink?
+      return unless condition_met
       return unless rack.children.any? do |child|
         child.directory? && !child.symlink? && !child.basename.to_s.start_with?(".")
       end
@@ -1336,7 +1378,8 @@ module Homebrew
 
     sig { params(formula: T.untyped).returns(T::Boolean) }
     def self.transaction_required?(formula)
-      return false unless active? && valid_formula_name?(formula.name)
+      condition_met = active? && valid_formula_name?(formula.name)
+      return false unless condition_met
 
       base_rack = base_cellar/formula.name
       base_rack.directory? && !base_rack.symlink? && !local_realizations?(formula.name)
@@ -1374,11 +1417,7 @@ module Homebrew
       raise TransactionFailure, "unsafe administrator Homebrew prefix: #{prefix}" unless safe_prefix
 
       flags = File::RDONLY | File::NOFOLLOW
-      # This descriptor is intentionally returned so the caller can hold the shared lease through the build.
-      # rubocop:disable Style/AutoResourceCleanup, Style/FileOpen
-      lease = File.open(lock_path, flags)
-      # rubocop:enable Style/AutoResourceCleanup, Style/FileOpen
-      lease.close_on_exec = true
+      lease = open_retained_file(lock_path, flags)
       descriptor_stat = lease.stat
       path_stat = lock_path.lstat
       safe_lock = descriptor_stat.file? && descriptor_stat.uid == prefix_stat.uid && descriptor_stat.nlink == 1 &&
@@ -1457,10 +1496,11 @@ module Homebrew
       validate_base_generation!(generation)
       path = Pathname(keg_path).expand_path
       rack = path.parent
-      unless active? && path.directory? && !path.symlink? &&
-             rack.directory? && !rack.symlink? && rack.parent.expand_path == HOMEBREW_CELLAR.expand_path &&
-             valid_formula_name?(rack.basename.to_s) && valid_version_name?(path.basename.to_s) &&
-             path.stat.uid == Process.uid
+      local_keg = active? && path.directory? && !path.symlink? &&
+                  rack.directory? && !rack.symlink? && rack.parent.expand_path == HOMEBREW_CELLAR.expand_path &&
+                  valid_formula_name?(rack.basename.to_s) && valid_version_name?(path.basename.to_s) &&
+                  path.stat.uid == Process.uid
+      unless local_keg
         raise TransactionFailure, "refusing to record a base generation outside a local keg: #{path}"
       end
 
@@ -1479,10 +1519,12 @@ module Homebrew
       current = current_base_generation
       drift = T.let([], T::Array[Pathname])
       HOMEBREW_CELLAR.children.sort.each do |rack|
-        next unless rack.directory? && !rack.symlink? && valid_formula_name?(rack.basename.to_s)
+        valid_rack = rack.directory? && !rack.symlink? && valid_formula_name?(rack.basename.to_s)
+        next unless valid_rack
 
         rack.children.sort.each do |keg|
-          next unless keg.directory? && !keg.symlink? && valid_version_name?(keg.basename.to_s)
+          valid_keg = keg.directory? && !keg.symlink? && valid_version_name?(keg.basename.to_s)
+          next unless valid_keg
 
           marker = keg/BASE_GENERATION_MARKER
           recorded = begin
@@ -1546,7 +1588,12 @@ module Homebrew
 
       transaction_id = ENV.fetch("HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID", nil)
       return if transaction_id.blank?
-      unless active? && valid_formula_name?(formula_name) && transaction_id.match?(/\A[1-9][0-9]*-[0-9a-f]{24}\z/)
+
+      valid_transaction_id =
+        active? &&
+        valid_formula_name?(formula_name) &&
+        transaction_id.match?(/\A[1-9][0-9]*-[0-9a-f]{24}\z/)
+      unless valid_transaction_id
         raise TransactionFailure, "invalid overlay build transaction"
       end
 
@@ -1570,7 +1617,12 @@ module Homebrew
       staging_root = HOMEBREW_CELLAR/".homebrew-overlay-staging"/transaction_id
       staging_rack = staging_root/formula_name
       [staging_root.parent, staging_root, staging_rack].each do |directory|
-        unless directory.directory? && !directory.symlink? && directory.stat.uid == Process.uid && directory.writable?
+        safe_staging_directory =
+          directory.directory? &&
+          !directory.symlink? &&
+          directory.stat.uid == Process.uid &&
+          directory.writable?
+        unless safe_staging_directory
           raise TransactionFailure, "unsafe overlay build staging directory: #{directory}"
         end
       end
@@ -1581,7 +1633,8 @@ module Homebrew
     sig { params(formula_name: String).void }
     def self.ensure_inherited_rack!(formula_name)
       base_rack = base_cellar/formula_name
-      unless base_rack.directory? && !base_rack.symlink?
+      condition_met = base_rack.directory? && !base_rack.symlink?
+      unless condition_met
         raise TransactionFailure, "administrator formula rack is unavailable: #{base_rack}"
       end
 
@@ -1589,7 +1642,8 @@ module Homebrew
       if !rack.exist? && !rack.symlink?
         File.symlink(base_rack, rack)
       elsif rack.symlink?
-        unless inherited_path?(rack) && canonical_path(rack) == canonical_path(base_rack)
+        condition_met = inherited_path?(rack) && canonical_path(rack) == canonical_path(base_rack)
+        unless condition_met
           raise TransactionFailure, "refusing to replace non-inherited formula rack: #{rack}"
         end
       elsif !rack.directory?
@@ -1690,7 +1744,8 @@ module Homebrew
     def self.atomic_exchange!(left, right)
       cellar = HOMEBREW_CELLAR.expand_path
       [left, right].each do |path|
-        unless path_under?(path.expand_path, cellar) && (path.exist? || path.symlink?)
+        condition_met = path_under?(path.expand_path, cellar) && (path.exist? || path.symlink?)
+        unless condition_met
           raise TransactionFailure, "unsafe overlay exchange path: #{path}"
         end
       end
@@ -1741,7 +1796,8 @@ module Homebrew
 
       %w[bin sbin include lib share Frameworks opt var/homebrew/linked].each do |relative_root|
         root = HOMEBREW_PREFIX/relative_root
-        next unless root.directory? && !root.symlink?
+        condition_met = root.directory? && !root.symlink?
+        next unless condition_met
 
         root.find do |path|
           next unless path.symlink?
@@ -1777,18 +1833,18 @@ module Homebrew
     sig { params(relative: String).returns(T.nilable(String)) }
     def self.expected_link_target(relative)
       components = relative.split("/", -1)
-      case components
-      in ["Cellar", formula]
-        return unless valid_formula_name?(formula)
-      in ["Cellar", formula, version]
-        return unless valid_formula_name?(formula) && valid_version_name?(version)
-      in ["opt", formula]
-        return unless valid_formula_name?(formula)
-      in ["var", "homebrew", "linked", formula]
-        return unless valid_formula_name?(formula)
-      else
-        return
+      formula = if (components.length == 2 && %w[Cellar opt].include?(components.first)) ||
+                   (components.length == 3 && components.first == "Cellar")
+        components[1]
+      elsif components.length == 4 && components.first(3) == %w[var homebrew linked]
+        components[3]
       end
+      return if formula.nil?
+      return unless valid_formula_name?(formula)
+
+      version = (components.length == 3) ? components[2] : nil
+      valid_version = version.nil? || valid_version_name?(version)
+      return unless valid_version
 
       (base_prefix/relative).to_s
     end
@@ -1833,7 +1889,8 @@ module Homebrew
 
     sig { params(path: Pathname).returns(T::Boolean) }
     def self.inherited_prefix_link?(path)
-      return false unless active? && path.symlink? && active_prefix_path?(path)
+      condition_met = active? && path.symlink? && active_prefix_path?(path)
+      return false unless condition_met
 
       relative = path.relative_path_from(HOMEBREW_PREFIX).to_s
       expected_target = link_state_entries[relative]
@@ -1898,14 +1955,14 @@ module Homebrew
       end
 
       flags = File::RDWR | File::CREAT | File::NOFOLLOW
-      lock = File.open(lock_path, flags, 0640)
+      lock = open_retained_file(lock_path, flags, mode: 0640)
       lock_stat = lock.stat
-      unless lock_stat.file? && lock_stat.uid == Process.uid && lock_stat.nlink == 1
+      safe_lock = lock_stat.file? && lock_stat.uid == Process.uid && lock_stat.nlink == 1
+      unless safe_lock
         lock.close
         raise TransactionFailure, "unsafe overlay mutation lock: #{lock_path}"
       end
       lock.chmod 0640
-      lock.close_on_exec = true
       lock.flock(File::LOCK_EX)
       @mutation_lock = lock
 
@@ -1913,6 +1970,7 @@ module Homebrew
       environment, options = mutation_process_context
       Homebrew.safe_system environment, "/bin/bash", script,
                            "--mark-generation-dirty", HOMEBREW_PREFIX.to_s, **options
+    # Cleanup must also restore durable state for Interrupt and SystemExit.
     rescue Exception # rubocop:disable Lint/RescueException
       release_mutation_lock!
       raise
@@ -1933,6 +1991,7 @@ module Homebrew
       Homebrew.safe_system environment, "/bin/bash", script,
                            "--bump-generation", HOMEBREW_PREFIX.to_s, **options
       release_mutation_lock!
+    # Cleanup must also restore durable state for Interrupt and SystemExit.
     rescue Exception # rubocop:disable Lint/RescueException
       release_mutation_lock!
       raise
@@ -1949,6 +2008,7 @@ module Homebrew
       Homebrew.safe_system environment, "/bin/bash", script, "--sync", **options
       release_mutation_lock! if mutation
       @link_state_entries = nil
+    # Cleanup must also restore durable state for Interrupt and SystemExit.
     rescue Exception # rubocop:disable Lint/RescueException
       release_mutation_lock! if mutation
       raise

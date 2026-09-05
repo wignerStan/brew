@@ -28,6 +28,7 @@ tests=(
   overlay_runtime_boot_test.sh
   overlay_loader_test.sh
   overlay_architecture_test.sh
+  overlay_directory_durability_test.sh
   overlay_marker_reader_integrity_test.sh
   overlay_removal_partition_test.sh
   overlay_rebase_workflow_test.sh
@@ -63,5 +64,7 @@ do
   printf '=== %s ===\n' "${test_name}"
   bash "${test_path}" "${repo}"
 done
+
+python3 "${support}/overlay_style_delta_check_test.py"
 
 printf 'complete native overlay audit regression gate: PASS\n'

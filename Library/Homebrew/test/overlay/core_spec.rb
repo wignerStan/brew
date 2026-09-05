@@ -66,6 +66,20 @@ RSpec.describe Homebrew::Overlay do
     FileUtils.ln_s(transaction.staging_version/"bin/foo", transaction.staging_version/"absolute-link")
   end
 
+  it "fsyncs each parent after publishing a new owned directory entry" do
+    target = prefix/"durability/first/second"
+    fsynced_parents = T.let([], T::Array[Pathname])
+    allow(described_class).to receive(:fsync_directory!).and_wrap_original do |original, path, **options|
+      fsynced_parents << path
+      original.call(path, **options)
+    end
+
+    described_class.ensure_owned_directory!(target)
+
+    expect(fsynced_parents).to eq([prefix, prefix/"durability", prefix/"durability/first"])
+    expect(target).to be_a_directory
+  end
+
   it "recognizes a symlinked administrator rack and keg as inherited" do
     add_base_formula("foo", "1.0")
 
