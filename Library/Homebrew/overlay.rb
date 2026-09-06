@@ -8,5 +8,6 @@
 # surface.
 require "overlay/core"
 require "overlay/owned_io"
+require "overlay/durable_fs"
 require "overlay/install_session"
 require "overlay/reinstall_session"

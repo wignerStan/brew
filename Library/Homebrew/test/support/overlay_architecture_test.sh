@@ -23,6 +23,14 @@
           echo "Error: public Ruby overlay loader no longer loads overlay/core" >&2
           exit 1
         }
+        grep -Fx 'require "overlay/owned_io"' "${ruby_loader}" >/dev/null || {
+          echo "Error: public Ruby overlay loader no longer loads overlay/owned_io" >&2
+          exit 1
+        }
+        grep -Fx 'require "overlay/durable_fs"' "${ruby_loader}" >/dev/null || {
+          echo "Error: public Ruby overlay loader no longer loads overlay/durable_fs" >&2
+          exit 1
+        }
         grep -Fx 'require "overlay/install_session"' "${ruby_loader}" >/dev/null || {
           echo "Error: public Ruby overlay loader no longer loads the install session" >&2
           exit 1
@@ -95,6 +103,41 @@
         done < <(
           find "${repo}/Library/Homebrew" "${repo}/bin" -type f             \( -name '*.sh' -o -path "${repo}/bin/brew" \) -print
         )
+
+        extracted_methods=(
+          open_retained_file
+          read_owned_file
+          ensure_owned_directory!
+          fsync_directory!
+          fsync_tree!
+          durable_atomic_write!
+          durable_unlink!
+          remove_tree_durable!
+        )
+        for extracted_method in "${extracted_methods[@]}"
+        do
+          if grep -Fq "def self.${extracted_method}" "${ruby_impl}/core.rb"
+          then
+            echo "Error: extracted overlay method returned to core.rb: ${extracted_method}" >&2
+            exit 1
+          fi
+        done
+
+        for owned_method in open_retained_file read_owned_file
+        do
+          grep -Fq "def self.${owned_method}" "${ruby_impl}/owned_io.rb" || {
+            echo "Error: overlay/owned_io.rb no longer owns ${owned_method}" >&2
+            exit 1
+          }
+        done
+
+        for durable_method in ensure_owned_directory! fsync_directory! fsync_tree! durable_atomic_write! durable_unlink! remove_tree_durable!
+        do
+          grep -Fq "def self.${durable_method}" "${ruby_impl}/durable_fs.rb" || {
+            echo "Error: overlay/durable_fs.rb no longer owns ${durable_method}" >&2
+            exit 1
+          }
+        done
 
         printf 'overlay architecture boundary: PASS
 '

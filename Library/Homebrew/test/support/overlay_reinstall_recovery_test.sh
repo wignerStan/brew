@@ -121,13 +121,15 @@ test ! -e "${live}"
 python3 \
   - "${repo}/Library/Homebrew/reinstall/reinstall.rb" \
   "${repo}/Library/Homebrew/overlay/reinstall_session.rb" \
-  "${repo}/Library/Homebrew/overlay/core.rb" <<'PY'
+  "${repo}/Library/Homebrew/overlay/core.rb" \
+  "${repo}/Library/Homebrew/overlay/durable_fs.rb" <<'PY'
 from pathlib import Path
 import sys
 
 reinstall = Path(sys.argv[1]).read_text(encoding="utf-8")
 session = Path(sys.argv[2]).read_text(encoding="utf-8")
 overlay = Path(sys.argv[3]).read_text(encoding="utf-8")
+durable_fs = Path(sys.argv[4]).read_text(encoding="utf-8")
 assert "Homebrew::Overlay::ReinstallSession.build" in reinstall
 assert "overlay_session.prepare!" in reinstall
 assert "overlay_session.rollback!" in reinstall
@@ -137,7 +139,9 @@ assert "ReinstallBackup.new" in session
 assert "committed_replacement?" in session
 assert "mark_reinstall_committed!" in overlay
 assert "committed_base_generation" in overlay
-assert ".cleanup-#{path.basename}" in overlay
+assert ".cleanup-#{path.basename}" in durable_fs
+assert "def self.remove_tree_durable!" in durable_fs
+assert "def self.remove_tree_durable!" not in overlay
 assert session.index("@keg.unlink") < session.index("ReinstallBackup.new")
 assert "class ReinstallBackup" in overlay
 assert "Cellar/\".homebrew-overlay-failed\"" not in overlay  # Path composition remains typed, not string interpolation.

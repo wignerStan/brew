@@ -9,12 +9,14 @@ source "${repo}/Library/Homebrew/utils/overlay.sh"
 
 python3 \
   - "${repo}/Library/Homebrew/overlay/core.rb" \
+  "${repo}/Library/Homebrew/overlay/durable_fs.rb" \
   "${repo}/Library/Homebrew/utils/overlay/core.sh" <<'PY'
 from pathlib import Path
 import sys
 
 ruby = Path(sys.argv[1]).read_text(encoding="utf-8")
-shell = Path(sys.argv[2]).read_text(encoding="utf-8")
+durable_fs = Path(sys.argv[2]).read_text(encoding="utf-8")
+shell = Path(sys.argv[3]).read_text(encoding="utf-8")
 
 def body(source: str, start_fragment: str, end_fragment: str) -> str:
     start = source.index(start_fragment)
@@ -54,10 +56,13 @@ ordered(exchange, [
 ], "rack-exchange durability")
 
 tree = body(
-    ruby,
+    durable_fs,
     "    def self.fsync_tree!(root)\n",
     "\n    sig { params(path: Pathname, contents: String, mode: Integer).void }",
 )
+if "def self.fsync_tree!" in ruby:
+    raise SystemExit("fsync_tree! returned to overlay/core.rb")
+
 for required in (
     "File::NOFOLLOW",
     "file.fsync",

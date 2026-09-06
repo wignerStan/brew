@@ -33,15 +33,18 @@ finally:
     os.close(fd)
 PY
 
-python3 - "${repo}/Library/Homebrew/overlay/core.rb" <<'PY'
+python3 \
+  - "${repo}/Library/Homebrew/overlay/core.rb" \
+  "${repo}/Library/Homebrew/overlay/owned_io.rb" <<'PY'
 from pathlib import Path
 import sys
 
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-assert "def self.read_owned_file" in source
-reader_start = source.index("    def self.read_owned_file")
-reader_end = source.index("\n    sig { params(path: Pathname).returns(Pathname) }", reader_start)
-reader = source[reader_start:reader_end]
+core = Path(sys.argv[1]).read_text(encoding="utf-8")
+owned_io = Path(sys.argv[2]).read_text(encoding="utf-8")
+assert "def self.read_owned_file" in owned_io
+assert "def self.read_owned_file" not in core
+reader_start = owned_io.index("    def self.read_owned_file")
+reader = owned_io[reader_start:]
 for required in (
     "File::NOFOLLOW",
     "file.stat",
@@ -54,16 +57,16 @@ for required in (
 assert reader.count("path.lstat") >= 2
 assert reader.count("file.stat") >= 2
 
-marker_start = source.index("      def marker_owned?")
-marker_end = source.index("\n      sig { returns(T::Boolean) }", marker_start)
-marker = source[marker_start:marker_end]
+marker_start = core.index("      def marker_owned?")
+marker_end = core.index("\n      sig { returns(T::Boolean) }", marker_start)
+marker = core[marker_start:marker_end]
 assert "Overlay.read_owned_file" in marker
 assert ".binread" not in marker
 assert ".lstat" not in marker
 
-state_start = source.index("    def self.link_state_entries")
-state_end = source.index("\n    private_class_method :link_state_entries", state_start)
-state = source[state_start:state_end]
+state_start = core.index("    def self.link_state_entries")
+state_end = core.index("\n    private_class_method :link_state_entries", state_start)
+state = core[state_start:state_end]
 assert "read_owned_file" in state
 assert ".binread" not in state
 assert ".stat" not in state

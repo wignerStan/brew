@@ -47,9 +47,13 @@ of retaining broad Homebrew objects.
 ## Current extraction state
 
 - `core.rb` is the compatibility implementation boundary for path policy,
-  descriptor-bound I/O, durable filesystem operations, locking, generation,
-  view state, and transaction recovery. Keep new responsibilities out of this
-  file and extract the existing ones behind unchanged public methods.
+  locking, generation, view state, and transaction recovery. Keep new
+  responsibilities out of this file and extract the existing ones behind
+  unchanged public methods.
+- `owned_io.rb` owns descriptor-bound retained opens and stable reads of
+  security-sensitive metadata.
+- `durable_fs.rb` owns crash-consistent directory creation, synchronization,
+  atomic publication, unlink, and detach-then-delete cleanup.
 - `install_session.rb` captures the current formula identity at install start
   and owns the lease, transaction, generation, and failure scope spanning
   `FormulaInstaller#install` and `#finish`.
@@ -57,7 +61,6 @@ of retaining broad Homebrew objects.
   rollback, and commit policy; `reinstall/reinstall.rb` keeps native backup
   behavior and delegates through one overlay session.
 
-Prefer the next extractions in this order: `owned_io.rb`, `durable_fs.rb`,
-`lock_lease.rb`, `path_policy.rb`, `formula_transaction.rb`, and
-`reinstall_backup.rb`. Preserve public callers and durable state formats while
-moving code.
+Prefer the next extractions in this order: `lock_lease.rb`,
+`path_policy.rb`, `formula_transaction.rb`, and `reinstall_backup.rb`.
+Preserve public callers and durable state formats while moving code.
