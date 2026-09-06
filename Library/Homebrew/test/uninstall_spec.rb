@@ -72,14 +72,13 @@ RSpec.describe Homebrew::Uninstall do
   end
 
   describe "::uninstall_kegs with a native overlay" do
-    let(:local_keg) { Keg.new(dependency.rack/"2") }
-    let(:inherited_keg) { Keg.new(HOMEBREW_PREFIX/"base-cellar/dependency/1") }
+    let(:local_keg_path) { dependency.rack/"2" }
+    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base/Cellar/dependency/1" }
+    let(:local_keg) { instance_double(Keg, to_path: local_keg_path) }
+    let(:inherited_keg) { instance_double(Keg, to_path: inherited_keg_path) }
 
     before do
-      local_keg.to_path.mkpath
-      inherited_keg.to_path.mkpath
-      allow(Homebrew::Overlay).to receive(:active?).and_return(true)
-      allow(Homebrew::Overlay).to receive(:base_prefix).and_return(HOMEBREW_PREFIX/"base")
+      allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: HOMEBREW_PREFIX/"base")
       allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|
         Pathname(path) == inherited_keg.to_path
       end
@@ -95,7 +94,7 @@ RSpec.describe Homebrew::Uninstall do
 
       described_class.uninstall_kegs(
         { dependency.rack => [local_keg, inherited_keg] },
-        force: true,
+        force:               true,
         ignore_dependencies: true,
       )
     end
@@ -107,10 +106,10 @@ RSpec.describe Homebrew::Uninstall do
       expect do
         described_class.uninstall_kegs(
           { dependency.rack => [inherited_keg] },
-          force: true,
+          force:               true,
           ignore_dependencies: true,
         )
-      end.to output(/administrator Homebrew prefix/).to_stderr
+      end.to output(/cannot be modified from the user prefix/).to_stderr
 
       expect(Homebrew).to have_failed
     end

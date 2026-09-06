@@ -111,6 +111,17 @@ test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-staging/txn-pending"
 test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-racks/txn-pending"
 test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-failed/txn-pending"
 
+
+# Cleanup first detaches active control roots. A later process treats
+# partially deleted tombstones as deletion-only objects and resumes
+# cleanup without parsing their contents.
+tombstone_case="${work}/cleanup-tombstones"
+make_case "${tombstone_case}"
+mkdir -p   "${tombstone_case}/user/var/homebrew/overlay/transactions/.cleanup-transaction-dead-1111111111111111/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-staging/.cleanup-staging-dead-2222222222222222/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-racks/.cleanup-racks-dead-3333333333333333/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-failed/.cleanup-failed-dead-4444444444444444/partial"
+activate "${tombstone_case}"
+homebrew-overlay-sync --force
+test -z "$(find "${tombstone_case}/user" -name '.cleanup-*' -print -quit)"
+
 # A process may die after acquiring its owner lock but before creating even a
 # hidden journal. An unlocked orphan is cleaned; a malformed visible journal
 # remains a hard error rather than being silently discarded.
@@ -309,7 +320,7 @@ test -d "${case7}/user/Cellar/foo/2.0"
 test -d "${case7}/user/var/homebrew/overlay/transactions/txn-generation"
 grep -q 'wrong base generation' "${case7}/stderr"
 
-python3 - "${repo}/Library/Homebrew/overlay.rb" <<'PY_ORDER'
+python3 - "${repo}/Library/Homebrew/overlay/core.rb" <<'PY_ORDER'
 from pathlib import Path
 import sys
 

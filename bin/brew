@@ -119,6 +119,26 @@ BIN_BREW_EXPORTED_VARS=(
 printf -v BIN_BREW_EXPORTED_VARS_REGEX '%s|' "${BIN_BREW_EXPORTED_VARS[@]}"
 BIN_BREW_EXPORTED_VARS_REGEX="^(${BIN_BREW_EXPORTED_VARS_REGEX%|})(=|$)"
 
+# Overlay settings have explicit precedence: invoking process, user config,
+# then system config. Preserve process values before reading any env files.
+OVERLAY_INLINE_ENV=()
+if [[ -n "${HOMEBREW_OVERLAY+x}" ]]
+then
+  OVERLAY_INLINE_ENV+=("HOMEBREW_OVERLAY=${HOMEBREW_OVERLAY}")
+fi
+if [[ -n "${HOMEBREW_OVERLAY_BASE_PREFIX+x}" ]]
+then
+  OVERLAY_INLINE_ENV+=("HOMEBREW_OVERLAY_BASE_PREFIX=${HOMEBREW_OVERLAY_BASE_PREFIX}")
+fi
+if [[ -n "${HOMEBREW_OVERLAY_FORCE+x}" ]]
+then
+  OVERLAY_INLINE_ENV+=("HOMEBREW_OVERLAY_FORCE=${HOMEBREW_OVERLAY_FORCE}")
+fi
+if [[ -n "${HOMEBREW_OVERLAY_USER_PREFIX+x}" ]]
+then
+  OVERLAY_INLINE_ENV+=("HOMEBREW_OVERLAY_USER_PREFIX=${HOMEBREW_OVERLAY_USER_PREFIX}")
+fi
+
 # Load Homebrew's variable configuration files from disk.
 export_homebrew_env_file() {
   local env_file
@@ -141,6 +161,69 @@ export_homebrew_env_file() {
     fi
 
     export "${line?}"
+  done <"${env_file}"
+}
+
+# Load only overlay settings. A dedicated user overlay.env is deliberately
+# data, not shell code, and must be a private regular file owned by this user.
+export_homebrew_overlay_env_file() {
+  local env_file line mode
+  local line_number=0
+  local strict="${2:-0}"
+
+  env_file="${1}"
+  if [[ "${strict}" -eq 1 ]]
+  then
+    [[ ! -e "${env_file}" && ! -L "${env_file}" ]] && return 0
+    if [[ ! -f "${env_file}" || -L "${env_file}" || ! -O "${env_file}" || ! -r "${env_file}" ]]
+    then
+      echo "Error: unsafe user overlay environment file: ${env_file}" >&2
+      return 1
+    fi
+    if mode="$(stat -c '%a' -- "${env_file}" 2>/dev/null)"
+    then
+      :
+    elif mode="$(stat -f '%Lp' "${env_file}" 2>/dev/null)"
+    then
+      :
+    else
+      echo "Error: could not inspect user overlay environment file: ${env_file}" >&2
+      return 1
+    fi
+    case "${mode}" in
+      "" | *[!0-7]*)
+        echo "Error: invalid permissions on user overlay environment file: ${env_file}" >&2
+        return 1
+        ;;
+    esac
+    if (( (8#${mode} & 8#022) != 0 ))
+    then
+      echo "Error: user overlay environment file is group- or world-writable: ${env_file}" >&2
+      return 1
+    fi
+  else
+    [[ -r "${env_file}" ]] || return 0
+  fi
+
+  while IFS= read -r line || [[ -n "${line}" ]]
+  do
+    line_number=$((line_number + 1))
+    case "${line}" in
+      "" | \#*) ;;
+      HOMEBREW_OVERLAY=* | \
+      HOMEBREW_OVERLAY_BASE_PREFIX=* | \
+      HOMEBREW_OVERLAY_FORCE=* | \
+      HOMEBREW_OVERLAY_USER_PREFIX=*)
+        export "${line}"
+        ;;
+      *)
+        if [[ "${strict}" -eq 1 ]]
+        then
+          echo "Error: unsupported setting in ${env_file}:${line_number}" >&2
+          return 1
+        fi
+        ;;
+    esac
   done <"${env_file}"
 }
 
@@ -179,6 +262,16 @@ if [[ -n "${SYSTEM_ENV_TAKES_PRIORITY-}" ]]
 then
   export_homebrew_env_file "/etc/homebrew/brew.env"
 fi
+
+# Overlay activation is intentionally independent of the general
+# HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY behavior: inline > local > system.
+export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/brew.env"
+export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/overlay.env" 1 || exit $?
+for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
+do
+  export "${OVERLAY_ENV_ASSIGNMENT}"
+done
+unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 
 # If explicitly enabled, redirect a user who cannot write the administrator
 # prefix into a native-layout per-user Homebrew prefix. Keep this before
