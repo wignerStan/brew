@@ -85,14 +85,16 @@ module Homebrew
         options = install_context.options
         link_keg = install_context.link_keg
         verbose = formula_installer.verbose?
-        inherited_keg = T.let(!keg.nil? && Homebrew::Overlay.inherited_keg?(keg.to_path), T::Boolean)
+        overlay_session = Homebrew::Overlay::ReinstallSession.build(keg, link_keg:, verbose:)
 
         formula_installer.check_installation_already_attempted
 
         oh1 "Reinstalling #{Formatter.identifier(formula.full_name)} #{options.to_a.join " "}"
 
-        if keg
-          inherited_keg ? keg.unlink : backup(keg)
+        if overlay_session
+          overlay_session.prepare!
+        elsif keg
+          backup(keg)
         end
         formula_installer.install
         formula_installer.finish
@@ -101,18 +103,17 @@ module Homebrew
         # Any other exceptions we want to restore the previous keg and report the error.
       rescue Exception # rubocop:disable Lint/RescueException
         ignore_interrupts do
-          if inherited_keg
-            # FormulaInstaller rolls back any staged realization. Rebuild the
-            # inherited opt/linked records when failure occurred before the
-            # transaction started.
-            Homebrew::Overlay.sync!
+          if overlay_session
+            overlay_session.rollback!
           elsif keg
             restore_backup(keg, link_keg, verbose:)
           end
         end
         raise
       else
-        if keg && !inherited_keg
+        if overlay_session
+          overlay_session.commit!
+        elsif keg
           backup_keg = backup_path(keg)
           begin
             FileUtils.rm_r(backup_keg) if backup_keg.exist?

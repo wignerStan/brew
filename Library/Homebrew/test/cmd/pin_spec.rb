@@ -45,4 +45,20 @@ RSpec.describe Homebrew::Cmd::Pin do
       .to output(/testball not installed/).to_stderr
     expect(Homebrew).to have_failed
   end
+
+  it "removes an old inherited pin and refuses an inherited-only overlay Formula" do
+    package = instance_double(
+      Formula,
+      full_name: "testball",
+    )
+    cmd = described_class.new(["testball"])
+    allow(cmd.args.named).to receive(:to_resolved_formulae_to_casks).and_return([[package], []])
+    allow(Homebrew::Overlay).to receive(:inherited_only_formula?).with(package).and_return(true)
+    expect(package).to receive(:unpin)
+    expect(package).not_to receive(:pin)
+
+    expect { cmd.run }
+      .to output(/inherited from the administrator prefix.*brew reinstall testball/m).to_stderr
+    expect(Homebrew).to have_failed
+  end
 end
