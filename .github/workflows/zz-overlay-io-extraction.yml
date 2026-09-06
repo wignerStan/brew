@@ -40,8 +40,13 @@ jobs:
           set -euo pipefail
           source_root="${RUNNER_TEMP}/overlay-io-extraction-source"
           install -d -m 0700 "${source_root}"
-          install -m 0600 .github/scripts/extract_overlay_io_boundaries.py "${source_root}/"
-          python3 -m py_compile "${source_root}/extract_overlay_io_boundaries.py"
+          install -m 0600 \
+            .github/scripts/extract_overlay_io_boundaries.py \
+            .github/scripts/update_overlay_extraction_guards.py \
+            "${source_root}/"
+          python3 -m py_compile \
+            "${source_root}/extract_overlay_io_boundaries.py" \
+            "${source_root}/update_overlay_extraction_guards.py"
           git checkout --detach "${BASE_SHA}"
           git clean -ffdx
           test "$(git rev-parse HEAD)" = "${BASE_SHA}"
@@ -49,6 +54,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.hooksPath /dev/null
           python3 "${source_root}/extract_overlay_io_boundaries.py"
+          python3 "${source_root}/update_overlay_extraction_guards.py"
 
       - name: Validate topology, syntax, style, and architecture
         shell: bash
@@ -68,7 +74,9 @@ jobs:
           ruby -c Library/Homebrew/overlay/durable_fs.rb >/dev/null
           ruby -c Library/Homebrew/test/overlay/owned_io_spec.rb >/dev/null
           ruby -c Library/Homebrew/test/overlay/durable_fs_spec.rb >/dev/null
-          bash -n Library/Homebrew/test/support/overlay_architecture_test.sh
+          bash -n \
+            Library/Homebrew/test/support/overlay_architecture_test.sh \
+            Library/Homebrew/test/support/overlay_reinstall_recovery_test.sh
           python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
           python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${OVERLAY_STORE_SHA}" HEAD
           bash Library/Homebrew/test/support/overlay_architecture_test.sh "$PWD"
