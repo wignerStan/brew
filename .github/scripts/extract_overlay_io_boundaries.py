@@ -35,6 +35,7 @@ def extract(source: str, start: str, end: str, label: str) -> tuple[str, str]:
 def write_overlay_file(path: Path, description: str, body: str, requires: tuple[str, ...] = ()) -> None:
     require_lines = "".join(f'require "{require}"\n' for require in requires)
     separator = "\n" if require_lines else ""
+    normalized_body = body.rstrip() + "\n"
     path.write_text(
         "# typed: strict\n"
         "# frozen_string_literal: true\n\n"
@@ -42,7 +43,7 @@ def write_overlay_file(path: Path, description: str, body: str, requires: tuple[
         "module Homebrew\n"
         "  module Overlay\n"
         f"    # {description}\n"
-        f"{body}"
+        f"{normalized_body}"
         "  end\n"
         "end\n",
         encoding="utf-8",
