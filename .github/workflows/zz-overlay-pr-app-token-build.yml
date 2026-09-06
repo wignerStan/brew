@@ -1,0 +1,197 @@
+name: Build App-token hardening for overlay PR
+
+on:
+  push:
+    branches:
+      - automation/overlay-pr-app-token-build
+
+permissions: {}
+
+jobs:
+  build:
+    if: github.event.head_commit.message == 'Build App-token hardening for overlay PR'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.bundle.outputs.base_sha }}
+      candidate_sha: ${{ steps.bundle.outputs.candidate_sha }}
+      candidate_tree: ${{ steps.bundle.outputs.candidate_tree }}
+      bundle_sha256: ${{ steps.bundle.outputs.bundle_sha256 }}
+    steps:
+      - name: Check out the current PR head without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: fix/overlay-hardening-maintainability
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Import only the reviewed App-token delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="$(mktemp -d)"
+          git config core.hooksPath /dev/null
+          git fetch --no-tags origin \
+            +refs/heads/automation/overlay-app-token-hardening:refs/remotes/origin/app-token-hardening
+
+          source_ref=refs/remotes/origin/app-token-hardening
+          merge_base="$(git merge-base HEAD "${source_ref}")"
+          git merge-base --is-ancestor "${merge_base}" HEAD
+
+          mapfile -t changed_paths < <(git diff --name-only "${merge_base}..${source_ref}")
+          test "${#changed_paths[@]}" -gt 0
+          for path in "${changed_paths[@]}"
+          do
+            case "${path}" in
+              .github/workflows/rebase-upstream-overlay.yml|\
+              .github/workflows/overlay-validation.yml|\
+              .github/hardening-payload/Overlay-Promotion-Credentials.md|\
+              Library/Homebrew/test/support/overlay_rebase_workflow_test.sh)
+                ;;
+              *)
+                echo "unexpected App-token hardening path: ${path}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          patch="${RUNNER_TEMP}/app-token-hardening.patch"
+          git diff --binary "${merge_base}..${source_ref}" >"${patch}"
+          test -s "${patch}"
+          git apply --check "${patch}"
+          git apply "${patch}"
+          git diff --check
+
+          workflow=.github/workflows/rebase-upstream-overlay.yml
+          grep -Fq 'actions/create-github-app-token@' "${workflow}"
+          grep -Fq 'OVERLAY_AUTOPROMOTION_ENABLED' "${workflow}"
+          grep -Fq 'environment: overlay-promotion' "${workflow}"
+          if grep -Fq 'OVERLAY_PROMOTION_TOKEN' "${workflow}"
+          then
+            echo 'long-lived overlay promotion token remains in workflow' >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${changed_paths[@]}"
+          git commit -m 'Use a short-lived App token for overlay promotion'
+
+      - name: Validate workflow and overlay regression boundaries
+        shell: bash
+        env:
+          CI: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+          HOMEBREW_DEVELOPER: "1"
+        run: |
+          set -euo pipefail
+          git diff --check HEAD^
+          bin/brew style --display-cop-names \
+            .github/workflows/rebase-upstream-overlay.yml \
+            .github/workflows/overlay-validation.yml \
+            Library/Homebrew/test/support/overlay_rebase_workflow_test.sh
+          bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Create immutable candidate bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_sha="$(git rev-parse HEAD^)"
+          candidate_sha="$(git rev-parse HEAD)"
+          candidate_tree="$(git rev-parse 'HEAD^{tree}')"
+          bundle_dir="${RUNNER_TEMP}/overlay-app-token-candidate"
+          install -d -m 0700 "${bundle_dir}"
+          bundle="${bundle_dir}/candidate.bundle"
+          git update-ref refs/overlay-builder/candidate "${candidate_sha}"
+          trap 'git update-ref -d refs/overlay-builder/candidate' EXIT
+          git bundle create "${bundle}" refs/overlay-builder/candidate "^${base_sha}"
+          git bundle verify "${bundle}"
+          bundle_sha256="$(sha256sum "${bundle}" | awk '{print $1}')"
+          printf 'base_sha=%s\n' "${base_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'candidate_sha=%s\n' "${candidate_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'candidate_tree=%s\n' "${candidate_tree}" >>"${GITHUB_OUTPUT}"
+          printf 'bundle_sha256=%s\n' "${bundle_sha256}" >>"${GITHUB_OUTPUT}"
+
+      - name: Upload validated candidate bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: overlay-app-token-candidate
+          path: ${{ runner.temp }}/overlay-app-token-candidate/candidate.bundle
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated candidate bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: overlay-app-token-candidate
+          path: ${{ runner.temp }}/overlay-app-token-candidate
+
+      - name: Publish only the verified commit
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.build.outputs.base_sha }}
+          CANDIDATE_SHA: ${{ needs.build.outputs.candidate_sha }}
+          CANDIDATE_TREE: ${{ needs.build.outputs.candidate_tree }}
+          BUNDLE_SHA256: ${{ needs.build.outputs.bundle_sha256 }}
+          FINAL_BRANCH: fix/overlay-hardening-maintainability
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          isolated_home="$(mktemp -d)"
+          repository="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}" "${repository}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="$(mktemp -d)"
+
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${PUSH_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          bundle="${RUNNER_TEMP}/overlay-app-token-candidate/candidate.bundle"
+          test "$(sha256sum "${bundle}" | awk '{print $1}')" = "${BUNDLE_SHA256}"
+          git init -q "${repository}"
+          git -C "${repository}" config core.hooksPath /dev/null
+          git -C "${repository}" config transfer.fsckObjects true
+          git -C "${repository}" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${repository}" fetch --no-tags origin \
+              "+refs/heads/${FINAL_BRANCH}:refs/remotes/origin/final"
+          test "$(git -C "${repository}" rev-parse refs/remotes/origin/final)" = "${BASE_SHA}"
+          git -C "${repository}" bundle verify "${bundle}"
+          bundle_refs="$(git -C "${repository}" bundle unbundle "${bundle}")"
+          bundle_sha="$(printf '%s\n' "${bundle_refs}" | awk '$2 == "refs/overlay-builder/candidate" { print $1 }')"
+          test "${bundle_sha}" = "${CANDIDATE_SHA}"
+          test "$(git -C "${repository}" rev-parse "${CANDIDATE_SHA}^{tree}")" = "${CANDIDATE_TREE}"
+          test "$(git -C "${repository}" rev-list --count "${BASE_SHA}..${CANDIDATE_SHA}")" -eq 1
+          test -z "$(git -C "${repository}" rev-list --merges "${BASE_SHA}..${CANDIDATE_SHA}")"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${repository}" push \
+              --force-with-lease="refs/heads/${FINAL_BRANCH}:${BASE_SHA}" \
+              origin "${CANDIDATE_SHA}:refs/heads/${FINAL_BRANCH}"
