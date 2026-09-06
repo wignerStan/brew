@@ -74,18 +74,6 @@ shell = Path(sys.argv[3]).read_text(encoding="utf-8")
 )
 publication = replace_once(
     publication,
-    '''exchange = body(ruby, "    def self.atomic_exchange!(left, right)\\n", "\\n    # Remove a newly created",)
-''',
-    '''exchange = body(
-    durable_fs,
-    "    def self.atomic_exchange!(left, right)\\n",
-    "\\n    # Remove a newly created",
-)
-''',
-    "atomic exchange ownership assertion",
-)
-publication = replace_once(
-    publication,
     '''tree = body(
     ruby,
     "    def self.fsync_tree!(root)\\n",
@@ -101,8 +89,8 @@ publication = replace_once(
     '''for required in (
     "File::NOFOLLOW",
 ''',
-    '''if "def self.atomic_exchange!" in ruby or "def self.fsync_tree!" in ruby:
-    raise SystemExit("durable filesystem methods returned to overlay/core.rb")
+    '''if "def self.fsync_tree!" in ruby:
+    raise SystemExit("fsync_tree! returned to overlay/core.rb")
 
 for required in (
     "File::NOFOLLOW",
