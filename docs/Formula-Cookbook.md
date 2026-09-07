@@ -189,7 +189,7 @@ depends_on "foo" => :optional # Generated description would otherwise be "Build 
 
 Sometimes there’s a hard conflict between formulae that can’t be avoided or circumvented with [`keg_only`](/rubydoc/Formula.html#keg_only-class_method).
 
-A good example for minor conflict is the [`mbedtls`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/m/mbedtls.rb) formula, which ships and compiles a "Hello World" executable. This is obviously non-essential to `mbedtls`’s functionality, and as conflict with the popular GNU [`hello`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/h/hello.rb) formula would be overkill, we just [remove it](https://github.com/Homebrew/homebrew-core/blob/442f9cc511ce6dfe75b96b2c83749d90dde914d2/Formula/m/mbedtls.rb#L52-L53) during the installation process.
+A good example for minor conflict is the [`mbedtls`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/m/mbedtls.rb) formula, which ships and compiles a "Hello World" executable. This is obviously non-essential to `mbedtls`’s functionality and as conflict with the popular GNU [`hello`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/h/hello.rb) formula would be overkill, we just [remove it](https://github.com/Homebrew/homebrew-core/blob/442f9cc511ce6dfe75b96b2c83749d90dde914d2/Formula/m/mbedtls.rb#L52-L53) during the installation process.
 
 [`pdftohtml`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/p/pdftohtml.rb) provides an example of a serious conflict, where each listed formula ships an identically named binary that is essential to functionality, so a [`conflicts_with`](/rubydoc/Formula.html#conflicts_with-class_method) is preferable.
 
@@ -331,7 +331,7 @@ Some advice for specific cases:
 * If the formula is a library, compile and run some simple code that links against it. It could be taken from upstream's documentation / source examples. A good example is [`tinyxml2`](https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/t/tinyxml2.rb)'s test, which writes a small C++ source file into the test directory, compiles and links it against the tinyxml2 library and finally checks that the resulting program runs successfully.
 * If the formula is for a GUI program, try to find some function that runs as command-line only, like a format conversion, reading or displaying a config file, etc.
 * If the software cannot function without credentials or requires a virtual machine, docker instance, etc. to run, a test could be to try to connect with invalid credentials (or without credentials) and confirm that it fails as expected. This is preferred over mocking a dependency.
-* Homebrew comes with a number of [standard test fixtures](https://github.com/Homebrew/brew/tree/HEAD/Library/Homebrew/test/support/fixtures), including numerous sample images, sounds, and documents in various formats. You can get the file path to a test fixture with e.g. `test_fixtures("test.svg")`.
+* Homebrew comes with a number of [standard test fixtures](https://github.com/Homebrew/brew/tree/HEAD/Library/Homebrew/test/support/fixtures), including numerous sample images, sounds and documents in various formats. You can get the file path to a test fixture with e.g. `test_fixtures("test.svg")`.
 * If your test requires a test file that isn't a standard test fixture, you can install it from a source repository during the `test` phase with a [`resource`](/rubydoc/Formula.html#resource-class_method) block, like this:
 
 ```ruby
@@ -375,7 +375,7 @@ In case there are specific issues with the Homebrew packaging (compared to how t
 
 Name the formula like the project markets the product. So it’s `pkgconf`, not `pkgconfig`; `sdl_mixer`, not `sdl-mixer` or `sdlmixer`.
 
-The only exception is software such as “Apache Ant”. Apache puts “Apache” in front of everything, but we use the formula name `ant`. We only include the prefix in cases such as `gnuplot`, where it is part of the name, and `gnu-go`, because everyone calls it “GNU Go” and not just “Go”. The word “Go” is too common and there are too many implementations of it.
+The only exception is software such as “Apache Ant”. Apache puts “Apache” in front of everything, but we use the formula name `ant`. We only include the prefix in cases such as `gnuplot`, where it is part of the name and `gnu-go`, because everyone calls it “GNU Go” and not just “Go”. The word “Go” is too common and there are too many implementations of it.
 
 If you’re not sure about the name, check its homepage, Wikipedia page and [what Debian calls it](https://www.debian.org/distrib/packages).
 
@@ -390,15 +390,15 @@ When importing classes, Homebrew will require the formula and then create an ins
 * `foo-bar.rb` => `FooBar`
 * `foobar.rb` => `Foobar`
 
-Thus, if you change the name of the class, you must also rename the file. Filenames should be all lowercase, and class names should be the strict CamelCase equivalent, e.g. formulae `gnu-go` and `sdl_mixer` become classes `GnuGo` and `SdlMixer`, even if part of their name is an acronym.
+Thus, if you change the name of the class, you must also rename the file. Filenames should be all lowercase and class names should be the strict CamelCase equivalent, e.g. formulae `gnu-go` and `sdl_mixer` become classes `GnuGo` and `SdlMixer`, even if part of their name is an acronym.
 
 Add aliases by creating symlinks in an `Aliases` directory in the tap root.
 
 ### Audit the formula
 
-You can run `brew audit --strict --online` to test formulae for adherence to Homebrew house style, which is loosely based on the [Ruby Style Guide](https://github.com/rubocop-hq/ruby-style-guide#the-ruby-style-guide). The `audit` command includes warnings for trailing whitespace, preferred URLs for certain source hosts, and many other style issues. Fixing these warnings before committing will make the process a lot quicker for everyone.
+You can run `brew audit --strict --online` to test formulae for adherence to Homebrew house style, which is loosely based on the [Ruby Style Guide](https://github.com/rubocop-hq/ruby-style-guide#the-ruby-style-guide). The `audit` command includes warnings for trailing whitespace, preferred URLs for certain source hosts and many other style issues. Fixing these warnings before committing will make the process a lot quicker for everyone.
 
-New formulae being submitted to Homebrew should run `brew audit --new --formula foo`. This command is performed by BrewTestBot on new submissions as part of the automated build and test process, and highlights more potential issues than the standard audit.
+New formulae being submitted to Homebrew should run `brew audit --new --formula foo`. This command is performed by BrewTestBot on new submissions as part of the automated build and test process and highlights more potential issues than the standard audit.
 
 Use `brew info` and check if the version guessed by Homebrew from the URL is correct. Add an explicit [`version`](/rubydoc/Formula.html#version-class_method) if not.
 
@@ -735,7 +735,7 @@ For `url`/`regex` guidelines and additional `livecheck` block examples, refer to
 
 ### Excluding formulae from autobumping
 
-By default, all new formulae in the `Homebrew/homebrew-core` repository are autobumped. This means that future updates are handled automatically by Homebrew CI jobs, and contributors do not have to submit pull requests.
+By default, all new formulae in the `Homebrew/homebrew-core` repository are autobumped. This means that future updates are handled automatically by Homebrew CI jobs and contributors do not have to submit pull requests.
 
 Sometimes, we want to exclude a formula from this list, for one reason or another. This can be done by adding the `no_autobump!` method in the formula definition; a reason must be provided with the `because:` parameter. It accepts a string or a symbol that corresponds to a preset reason, for example:
 
@@ -785,7 +785,7 @@ If not inferable, specify which of Homebrew's built-in download strategies to us
 
 ```ruby
 class Nginx < Formula
-  desc "HTTP(S) server and reverse proxy, and IMAP/POP3 proxy server"
+  desc "HTTP(S) server and reverse proxy and IMAP/POP3 proxy server"
   homepage "https://nginx.org/"
   url "https://nginx.org/download/nginx-1.23.2.tar.gz", using: :homebrew_curl
   sha256 "a80cc272d3d72aaee70aa8b517b4862a635c0256790434dbfc4d618a999b0b46"
@@ -862,7 +862,7 @@ You can test whether the [`head`](/rubydoc/Formula.html#head-class_method) is be
 
 ### Compiler selection
 
-Sometimes a package fails to build when using a certain compiler. Since the [supported Xcode and Command Line Tools versions](Installation.md#macos-requirements) no longer include a GCC compiler we cannot simply force the use of GCC. Instead, the correct way to declare this is with the [`fails_with`](/rubydoc/Formula.html#fails_with-class_method) DSL method. A properly constructed [`fails_with`](/rubydoc/Formula.html#fails_with-class_method) block documents the latest compiler build version known to cause compilation to fail, and the cause of the failure. For example:
+Sometimes a package fails to build when using a certain compiler. Since the [supported Xcode and Command Line Tools versions](Installation.md#macos-requirements) no longer include a GCC compiler we cannot simply force the use of GCC. Instead, the correct way to declare this is with the [`fails_with`](/rubydoc/Formula.html#fails_with-class_method) DSL method. A properly constructed [`fails_with`](/rubydoc/Formula.html#fails_with-class_method) block documents the latest compiler build version known to cause compilation to fail and the cause of the failure. For example:
 
 ```ruby
 fails_with :clang do
@@ -884,7 +884,7 @@ fails_with gcc: "7" do
 end
 ```
 
-For `:clang`, `build` takes an integer (you can find this number in your `brew --config` output), while `:gcc` uses either just `version` which takes a string to indicate the last problematic GCC version, or a major version argument combined with `version` to single out a range of specific GCC releases. `cause` takes a string, and the use of heredocs is encouraged to improve readability and allow for more comprehensive documentation.
+For `:clang`, `build` takes an integer (you can find this number in your `brew --config` output), while `:gcc` uses either just `version` which takes a string to indicate the last problematic GCC version, or a major version argument combined with `version` to single out a range of specific GCC releases. `cause` takes a string and the use of heredocs is encouraged to improve readability and allow for more comprehensive documentation.
 
 [`fails_with`](/rubydoc/Formula.html#fails_with-class_method) declarations can be used with any of `:gcc`, `:llvm`, and `:clang`. Homebrew will use this information to select a working compiler (if one is available).
 
@@ -958,7 +958,7 @@ These can be used, for instance, in code such as:
 bin.install Dir["output/*"]
 ```
 
-to move binaries into their correct location within the Cellar, and:
+to move binaries into their correct location within the Cellar and:
 
 ```ruby
 man.mkpath
@@ -1182,7 +1182,7 @@ in Homebrew's GitHub Actions jobs and does not change permissions or ownership.
 `symlink_tree` recursively links a source directory's contents into a target
 directory, preserving existing real directories and skipping `.DS_Store` files.
 `symlink_children` links each direct child of a source directory into a target
-directory, defaulting the target to the same path as the source, and can add a
+directory, defaulting the target to the same path as the source and can add a
 `prefix` or `suffix` to each linked name. For example:
 
 ```ruby
@@ -1266,7 +1266,7 @@ end
 
 #### Service block methods
 
-This table lists the options you can set within a `service` block. The `run` or `name` field must be defined inside the service block. If `name` is defined without `run`, then Homebrew makes no attempt to change the package-provided service file according these fields. The `run` field indicates what command to run, instructs Homebrew to create a service description file using options set in the block, and therefore is required before using fields other than `name` and `require_root`.
+This table lists the options you can set within a `service` block. The `run` or `name` field must be defined inside the service block. If `name` is defined without `run`, then Homebrew makes no attempt to change the package-provided service file according these fields. The `run` field indicates what command to run, instructs Homebrew to create a service description file using options set in the block and therefore is required before using fields other than `name` and `require_root`.
 
 | method                  | default      | macOS | Linux | description |
 | ----------------------- | ------------ | :---: | :---: | ----------- |
@@ -1442,7 +1442,7 @@ See our [Deprecating, Disabling and Removing](Deprecating-Disabling-and-Removing
 
 ## Updating formulae
 
-When a new version of the software is released, use `brew bump-formula-pr` to automatically update the [`url`](/rubydoc/Formula.html#url-class_method) and [`sha256`](/rubydoc/Formula.html#sha256-class_method), remove any [`revision`](/rubydoc/Formula.html#revision-class_method) lines, and submit a pull request. See our [How to Open a Homebrew Pull Request](How-To-Open-a-Homebrew-Pull-Request.md) documentation for more information.
+When a new version of the software is released, use `brew bump-formula-pr` to automatically update the [`url`](/rubydoc/Formula.html#url-class_method) and [`sha256`](/rubydoc/Formula.html#sha256-class_method), remove any [`revision`](/rubydoc/Formula.html#revision-class_method) lines and submit a pull request. See our [How to Open a Homebrew Pull Request](How-To-Open-a-Homebrew-Pull-Request.md) documentation for more information.
 
 ## Troubleshooting for new formulae
 

@@ -1,4 +1,4 @@
-# Native overlay review closure
+# Native Overlay Review Closure
 
 > **Superseded closure record.** This document closes the earlier R1–R12
 > review against an intermediate implementation. A later independent audit
@@ -32,12 +32,12 @@ The available offline checks are not a substitute for Homebrew's complete Ruby
 4 test matrix. Release acceptance on a target host still requires the blocked
 checks listed below.
 
-## R1–R12 disposition
+## Findings disposition
 
 ### R1 — launcher and synchronizer suppressed failures: closed
 
 Commit `4f177f1` makes bootstrap, directory validation, desired-view creation,
-link application, state publication, and synchronization propagate failure
+link application, state publication and synchronization propagate failure
 explicitly under the launcher's `set -u` execution model. The synchronizer
 validates the complete desired transition before removing managed links and
 uses a durable sync journal for recovery.
@@ -56,11 +56,11 @@ inherited replacement is built in a private staging rack while the lower rack
 remains visible. A complete replacement rack is prepared and published with
 Linux `renameat2(RENAME_EXCHANGE)` under the formula lock. Every durable phase
 is journaled. Startup recovery either restores the previous rack or accepts a
-fully committed rack, and failures represented by exceptions or
+fully committed rack and failures represented by exceptions or
 `Homebrew.failed?` roll back the transaction.
 
 Commit `e13ea02` adds generation validation before publication and commit,
-rejects writes through inherited version symlinks, and validates committed
+rejects writes through inherited version symlinks and validates committed
 metadata during recovery.
 
 Evidence:
@@ -105,11 +105,11 @@ Evidence:
 - `overlay_review_findings.sh` case 4
 - `overlay_test.sh` package-view and shell fallback assertions
 
-### R5 — `brew doctor` recommended deleting the administrator Cellar: closed
+### R5 — `brew doctor` recommended deleting the administrator cellar: closed
 
 Commit `c826826` suppresses the incompatible multiple-Cellar and non-default
 prefix advice while an overlay is active and adds overlay-specific checks for
-the lower Cellar, user-prefix ownership, managed state, transaction state, and
+the lower Cellar, user-prefix ownership, managed state, transaction state and
 generation drift. No overlay diagnostic proposes removing the administrator
 Cellar.
 
@@ -170,7 +170,7 @@ Commits `e13ea02` and `2d359bd` implement the minimum correction required by
 the review:
 
 - capture the administrator generation before a private build;
-- verify it during staging, immediately before publication, and during commit;
+- verify it during staging, immediately before publication and during commit;
 - abort and roll back when it changes during an install;
 - record the exact generation in every private keg;
 - detect later drift at startup and in `brew doctor`;
@@ -181,7 +181,7 @@ snapshot or prevent an administrator from changing it between user commands.
 It also intentionally reuses lower binaries with their original absolute base
 paths. Those are documented operational boundaries, not silently presented as
 an isolated environment. Administrators must not mutate the base while user
-installs are running, and stale private formulae must be reinstalled after a
+installs are running and stale private formulae must be reinstalled after a
 reported generation change.
 
 Evidence:
@@ -202,7 +202,7 @@ Evidence: `overlay_review_findings.sh` case 3 and `overlay_test.sh`.
 
 Commit `4f177f1` replaces absolute TSV paths with a NUL-delimited map of
 validated relative paths and exact absolute targets. Empty components, `.`,
-`..`, absolute relative-fields, newlines, unsafe parents, and symlinked managed
+`..`, absolute relative-fields, newlines, unsafe parents and symlinked managed
 parents are rejected. Removal occurs only when the destination remains under
 the owned user prefix and still matches the recorded target.
 
@@ -221,7 +221,7 @@ Evidence: `overlay_review_findings.sh` case 7 and `overlay_test.sh`.
 
 The final handoff has one checksum root. Its delivery archive contains the
 verified Git bundle, source archive, net patch, atomic format-patch series,
-review closure, verification log, handoff files, and `SHA256SUMS`. Verification
+review closure, verification log, handoff files and `SHA256SUMS`. Verification
 extracts that archive into a new directory and runs `sha256sum -c SHA256SUMS`
 there. Individually linked convenience files are not advertised as a second
 checksum-complete directory.
@@ -238,16 +238,16 @@ handoff:
 - all seven original adversarial shell findings;
 - durable formula-transaction crash recovery;
 - explicit-generation unchanged-path performance smoke;
-- focused command, migration, Bundle, dependent, diagnostic, installer, and
+- focused command, migration, Bundle, dependent, diagnostic, installer and
   overlay specifications;
-- Git whitespace, object, bundle, independent-clone, patch-replay, and source
+- Git whitespace, object, bundle, independent-clone, patch-replay and source
   archive checks.
 
 ## Checks still requiring the target build environment
 
 These are verification blockers, not unreported code fixes:
 
-- Homebrew's complete RSpec, RuboCop, and Sorbet suites under its requested Ruby
+- Homebrew's complete RSpec, RuboCop and Sorbet suites under its requested Ruby
   4.0.6 and development gem set;
 - real bottle and source installations across representative formula classes;
 - process-kill injection from a real Ruby installer at every transaction phase;

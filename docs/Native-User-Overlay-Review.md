@@ -1,4 +1,4 @@
-# Rigorous review: Homebrew 6.0.15 native per-user overlay
+# Rigorous Review: Homebrew 6.0.15 Native Per-User Overlay
 
 > **Historical review.** This document assesses the first native-overlay
 > prototype. See the current
@@ -48,11 +48,9 @@ synchronization measurement.
 
 ## Release-blocking findings
 
-### R1 — Critical: launcher and synchronizer suppress failures
+### R1 — critical: launcher and synchronizer suppress failures
 
-**Code evidence**
-
-- `bin/brew:184-185` calls `homebrew-overlay-bootstrap` without checking its
+- **Code evidence:** `bin/brew:184-185` calls `homebrew-overlay-bootstrap` without checking its
   status, and the launcher runs with `set -u`, not `set -e`.
 - `Library/Homebrew/utils/overlay.sh:377-378` runs Cellar synchronization and
   then prefix-link synchronization without short-circuiting. The second result
@@ -64,9 +62,7 @@ synchronization measurement.
 - `Library/Homebrew/utils/overlay.sh:190-193` can overwrite a failing launcher
   or config operation with the success status of the final `printf`.
 
-**Executed evidence**
-
-- An active overlay with a symlinked `Cellar` printed
+- **Executed evidence:** An active overlay with a symlinked `Cellar` printed
   `user overlay Cellar is not a real directory` but returned status `0`.
 - An unsafe `brew.env` symlink produced an explicit refusal message, while
   `homebrew-overlay-initialize-prefix` still returned status `0` and printed the
@@ -74,25 +70,19 @@ synchronization measurement.
 - A user `bin` path replaced by a symlink caused a required inherited executable
   not to be projected; synchronization returned `0` with no diagnostic.
 
-**Impact**
-
-A normal `brew` command can continue against a stale or partially synchronized
+**Impact:** A normal `brew` command can continue against a stale or partially synchronized
 prefix after the overlay has detected an unsafe state. A mutating command can
 then operate on a package view different from the one shown to dependency and
 linking code. This defeats the safety checks the implementation appears to add.
 
-**Required correction**
-
-Every mutating operation must propagate failure explicitly. Build the complete
+**Required correction:** Every mutating operation must propagate failure explicitly. Build the complete
 new Cellar/link state in staging, validate every link and directory, and publish
 it atomically only after all operations succeed. Do not use an unconditional
 `return 0`; do not treat a failed safe-mkdir as a successful omission.
 
-### R2 — Critical: rack shadowing is not an atomic or recoverable transaction
+### R2 — critical: rack shadowing is not an atomic or recoverable transaction
 
-**Code evidence**
-
-- `Library/Homebrew/overlay.rb:108-120` replaces an inherited rack symlink with
+- **Code evidence:** `Library/Homebrew/overlay.rb:108-120` replaces an inherited rack symlink with
   a real directory before installation. There is no durable transaction marker,
   staging rack, or startup recovery.
 - `Library/Homebrew/formula_installer.rb:553-654` sets
@@ -109,32 +99,24 @@ it atomically only after all operations succeed. Do not use an unconditional
 - Dependency installation at `formula_installer.rb:888-958` has no inherited
   rack rollback corresponding to the top-level path.
 
-**Executed evidence**
-
-After replacing an inherited rack symlink with an empty real rack and running
+**Executed evidence:** After replacing an inherited rack symlink with an empty real rack and running
 normal synchronization, the rack remained real and the valid base keg was no
 longer visible. This models interruption after preparation and before commit.
 
-**Impact**
-
-A signal, process kill, shell failure, link conflict, post-install failure, or
+**Impact:** A signal, process kill, shell failure, link conflict, post-install failure, or
 some dependency failures can leave an empty or partial local rack permanently
 shadowing a working administrator package. The next invocation treats that
 partial rack as intentional and does not repair it.
 
-**Required correction**
-
-Install into a uniquely named staging rack. Keep the inherited rack visible
+**Required correction:** Install into a uniquely named staging rack. Keep the inherited rack visible
 until all install and finish phases succeed. Commit with an atomic rename under
 the formula lock, record a durable transaction journal, and repair abandoned
 transactions during bootstrap. Roll back on both exceptions and
 `Homebrew.failed?`, including dependency installs.
 
-### R3 — Critical: formula migration can delete local files before failing on an inherited target
+### R3 — critical: formula migration can delete local files before failing on an inherited target
 
-**Static control-flow evidence**
-
-For a local old-name rack and an inherited base new-name rack:
+**Static control-flow evidence:** For a local old-name rack and an inherited base new-name rack:
 
 - `Library/Homebrew/migrator.rb:163-165` treats the inherited new-name symlink as
   an existing destination.
@@ -145,23 +127,17 @@ For a local old-name rack and an inherited base new-name rack:
 - Recovery at `migrator.rb:473-517` does not reconstruct files already deleted
   as conflicts when `new_cellar_existed` was true.
 
-**Impact**
-
-A rename/oldname migration can lose files from a developer-owned keg and still
+**Impact:** A rename/oldname migration can lose files from a developer-owned keg and still
 fail to complete. This is a local data-loss path, not merely a stale link.
 
-**Required correction**
-
-Make `Migrator` overlay-aware. Never merge into an inherited rack. Localize the
+**Required correction:** Make `Migrator` overlay-aware. Never merge into an inherited rack. Localize the
 new-name rack in staging first, preserve the old rack untouched until commit,
 and use a reversible journal rather than deleting conflicts before the move has
 succeeded.
 
-### R4 — High: inherited directory links are removed instead of unioned
+### R4 — high: inherited directory links are removed instead of unioned
 
-**Static control-flow evidence**
-
-- Native Homebrew's normal conflict path at `Library/Homebrew/keg.rb:738-763`
+- **Static control-flow evidence:** Native Homebrew's normal conflict path at `Library/Homebrew/keg.rb:738-763`
   resolves a linked directory into its owning keg and materializes its entries
   before adding another formula.
 - The overlay shortcut at `keg.rb:731-735` simply removes an inherited directory
@@ -174,23 +150,17 @@ local formula B adds `include/x/b.h`, linking B can make `a.h` disappear from th
 effective prefix. The next shell synchronization sees a real destination
 folder and does not repopulate the missing lower entries.
 
-**Impact**
-
-Common merged namespaces such as `include`, `lib/pkgconfig`, `lib/cmake`,
+**Impact:** Common merged namespaces such as `include`, `lib/pkgconfig`, `lib/cmake`,
 completion directories, and portions of `share` can lose inherited files when a
 local formula contributes to the same directory.
 
-**Required correction**
-
-Construct a real union directory before adding upper entries, preserving lower
+**Required correction:** Construct a real union directory before adding upper entries, preserving lower
 entry ownership and conflict rules. Better, generate the complete effective
 link tree in staging from package manifests and atomically switch generations.
 
-### R5 — High: `brew doctor` recommends deleting the administrator Cellar
+### R5 — high: `brew doctor` recommends deleting the administrator cellar
 
-**Static control-flow evidence**
-
-An active overlay intentionally has a user `HOMEBREW_PREFIX`, an
+**Static control-flow evidence:** An active overlay intentionally has a user `HOMEBREW_PREFIX`, an
 administrator-managed `HOMEBREW_REPOSITORY`, and a `Cellar` in both. The
 unchanged diagnostic at `Library/Homebrew/diagnostic.rb:475-493` therefore
 reports `You have multiple Cellars` and recommends:
@@ -203,50 +173,38 @@ In the documented deployment, that path is the administrator's base Cellar.
 `diagnostic.rb:1218-1231` also reports the user prefix as a non-default Homebrew
 prefix, which is expected but not overlay-aware.
 
-**Impact**
-
-The official health-check command labels the designed state as broken and gives
+**Impact:** The official health-check command labels the designed state as broken and gives
 a destructive remediation targeting the shared base installation.
 
-**Required correction**
-
-Disable incompatible native diagnostics when the overlay is active and replace
+**Required correction:** Disable incompatible native diagnostics when the overlay is active and replace
 them with overlay-specific checks that verify base readability, user-prefix
 ownership, transaction state, link generation, and base generation consistency.
 
-### R6 — High: every command rebuilds the full projected prefix
+### R6 — high: every command rebuilds the full projected prefix
 
-**Code evidence**
-
-- `bin/brew:181-185` runs bootstrap before normal command dispatch.
+- **Code evidence:** `bin/brew:181-185` runs bootstrap before normal command dispatch.
 - `Library/Homebrew/utils/overlay.sh:301-364` removes recorded links, recursively
   scans `bin`, `sbin`, `include`, `lib`, `share`, `Frameworks`, `etc`, `opt`, and
   most of `var`, and rebuilds the state file on every invocation.
 - This runs for read-only and fast commands as well as mutations.
 
-**Executed evidence**
-
-On the review host, an illustrative fixture with 500 inherited executable links
+**Executed evidence:** On the review host, an illustrative fixture with 500 inherited executable links
 and 1,000 mutable-state directories took 3.01 seconds for initial synchronization
 and 2.87 seconds for an unchanged second synchronization. These are
 environment-specific smoke measurements, not universal benchmarks, but they
 demonstrate linear work and large no-change overhead.
 
-**Impact**
-
-Shell startup through `brew shellenv`, `brew --prefix`, `brew list`, and all
+**Impact:** Shell startup through `brew shellenv`, `brew --prefix`, `brew list`, and all
 ordinary commands can incur multi-second latency. Large `etc`/`var` trees make
 performance and lock hold times progressively worse.
 
-**Required correction**
-
-Use a base generation identifier and an indexed manifest. Skip synchronization
+**Required correction:** Use a base generation identifier and an indexed manifest. Skip synchronization
 when neither the base generation nor local package generation changed. Apply
 incremental diffs after mutations and preserve fast read-only command paths.
 
 ## High-severity compatibility findings
 
-### R7 — High: native Homebrew command semantics are only partially integrated
+### R7 — high: native Homebrew command semantics are only partially integrated
 
 The patch modifies a small set of formula install/uninstall paths, but inherited
 packages affect many other native commands:
@@ -273,20 +231,16 @@ packages affect many other native commands:
   visible local replacement. Removing that replacement may be rejected even
   when a compatible inherited base keg would immediately become visible.
 
-**Impact**
-
-The design does not yet provide the stated behavior of a normal native Homebrew
+**Impact:** The design does not yet provide the stated behavior of a normal native Homebrew
 prefix layered over a base. Users must know a hidden list of commands and
 failure modes that are unsafe or semantically different.
 
-**Required correction**
-
-Move overlay behavior below command-specific call sites into a coherent package
+**Required correction:** Move overlay behavior below command-specific call sites into a coherent package
 view, transaction layer, and link-generation abstraction. Every formula mutation
 must either operate on a local realization or explicitly reject inherited input
 before side effects.
 
-### R8 — High: base state and local dependency graphs are not version-consistent
+### R8 — high: base state and local dependency graphs are not version-consistent
 
 The implementation exposes administrator kegs and links directly. Separate base
 and user locks are documented, but there is no generation snapshot, dependency
@@ -300,15 +254,11 @@ symlinks into `~/.linuxbrew` does not relocate those references. Stateful
 formulae may read or write base `etc`/`var` paths or fail because they are
 read-only.
 
-**Impact**
-
-The apparent effective prefix is not a stable package environment. Local
+**Impact:** The apparent effective prefix is not a stable package environment. Local
 packages can silently observe a different lower dependency set over time, and
 inherited programs do not consistently use user-local mutable state.
 
-**Required correction**
-
-At minimum, record and validate a base generation for each local realization.
+**Required correction:** At minimum, record and validate a base generation for each local realization.
 For stronger compatibility, use immutable base generations and rebuild or reject
 local dependents when their lower dependency identities change. Explicitly
 classify formulae whose runtime state or absolute paths cannot be safely
@@ -316,7 +266,7 @@ inherited.
 
 ## Medium- and low-severity findings
 
-### R9 — Medium: overlay initialization overwrites user configuration
+### R9 — medium: overlay initialization overwrites user configuration
 
 `Library/Homebrew/utils/overlay.sh:87-106` rewrites the complete
 `~/.linuxbrew/etc/homebrew/brew.env`. Reinitialization removed an unrelated
@@ -325,7 +275,7 @@ inherited.
 Store managed overlay settings separately, or update only explicitly owned keys
 while preserving user content and comments.
 
-### R10 — Medium: lexical state-file containment can escape the prefix
+### R10 — medium: lexical state-file containment can escape the prefix
 
 `Library/Homebrew/utils/overlay.sh:25-29` validates path strings lexically.
 `overlay.sh:228-242` trusts the user-writable TSV path field. A state entry such
@@ -337,7 +287,7 @@ Store only normalized relative paths, reject `.`/`..` and symlinked parent
 components, and use a structured, atomically replaced state format. TSV also
 cannot represent tabs or newlines safely.
 
-### R11 — Medium: base oldname/alias rack symlinks are exposed as installed racks
+### R11 — medium: base oldname/alias rack symlinks are exposed as installed racks
 
 `Library/Homebrew/utils/overlay.sh:218-225` uses `-d`, which follows symlinks, so
 base Cellar oldname links are projected. `Library/Homebrew/formula.rb:2618-2629`
@@ -347,7 +297,7 @@ both `newname` and `oldname` projected.
 Mirror only real base rack directories, and model Homebrew oldnames/aliases via
 formula metadata rather than as additional installed racks.
 
-### R12 — Low: the individually surfaced delivery directory is not self-contained
+### R12 — low: the individually surfaced delivery directory is not self-contained
 
 `SHA256SUMS` in the individually surfaced delivery directory references 12 files
 that are absent there, including `patches/`, `logs/`, `git-state.txt`, and

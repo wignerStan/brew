@@ -1,4 +1,4 @@
-# Final native-overlay review closure
+# Final Native-Overlay Review Closure
 
 This document records the disposition of findings F1–F8 from
 [Final native overlay review](Native-User-Overlay-Final-Review.md). That review
@@ -73,12 +73,12 @@ Transaction-created inherited children use the same desired-state validation,
 so removed administrator versions do not leave unmanaged broken children.
 
 Evidence: `overlay_view_reconciliation_test.sh` covers wrong targets,
-transaction-created links, administrator removal, and repeated passes.
+transaction-created links, administrator removal and repeated passes.
 
 ## F4 — force uninstall rejected mixed racks: closed
 
 Force uninstall partitions each rack into private and inherited kegs. It passes
-only private kegs to native removal, preserves inherited versions, and reports an
+only private kegs to native removal, preserves inherited versions and reports an
 inherited-only request instead of attempting to modify the base. Brewfile force
 cleanup uses the same behavior.
 
@@ -131,7 +131,7 @@ on the next invocation.
 
 A caller-supplied mutation-owner token is accepted only while the matching
 advisory lock is held and contains that token. Symlinked intermediate lock,
-journal, staging, and replacement directories are rejected.
+journal, staging and replacement directories are rejected.
 
 Evidence:
 
@@ -150,12 +150,12 @@ handoff must have one actual checksum root containing every file named in its
 - net patch and atomic format-patch series;
 - exact source archive;
 - current documentation and review closure;
-- verification log, Git state, patch manifest, handoff manifest, and blockers;
+- verification log, Git state, patch manifest, handoff manifest and blockers;
 - a restore-and-verify script.
 
 The release procedure extracts the delivery into a new directory, runs
 `sha256sum -c SHA256SUMS`, restores the bundle, compares HEAD and tree, replays
-the net patch and atomic series, and compares the source archive tree. F8 is
+the net patch and atomic series and compares the source archive tree. F8 is
 closed only by a delivery that passes those checks; source changes alone cannot
 close an artifact finding.
 
@@ -172,14 +172,14 @@ earlier batch failure.
 `overlay_final_review_reproducer.sh` is now a release regression gate rather
 than a vulnerability reproducer. It runs focused coverage for:
 
-- live, pending, abandoned, incomplete, published, committing, and recovery
+- live, pending, abandoned, incomplete, published, committing and recovery
   transaction states;
 - convergent exact-target version unions;
 - private-only force uninstall and autoremove partitioning;
 - the durable package boundary;
 - dirty-generation crash recovery and live-owner exclusion.
 
-The original adversarial review suite, native package-view integration, and
+The original adversarial review suite, native package-view integration and
 unchanged-startup performance smoke remain part of the offline matrix.
 
 ## Target-host acceptance still required
@@ -187,7 +187,7 @@ unchanged-startup performance smoke remain part of the offline matrix.
 The available offline checks do not replace Homebrew's supported development
 matrix. Before broad production deployment, run at least:
 
-- complete RSpec, RuboCop, and Sorbet under Homebrew's requested Ruby 4.0.6 and
+- complete RSpec, RuboCop and Sorbet under Homebrew's requested Ruby 4.0.6 and
   development gem set;
 - representative real bottle and source installations;
 - process-kill injection at each real installer transaction phase;

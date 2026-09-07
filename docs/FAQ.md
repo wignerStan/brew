@@ -79,7 +79,7 @@ Homebrew doesn't support arbitrary mixing and matching of formula versions, so e
 
 Which is usually: `~/Library/Caches/Homebrew`
 
-## My Mac `.app`s don’t find Homebrew utilities
+## My mac `.app`s don’t find Homebrew utilities
 
 GUI apps on macOS don't have Homebrew's prefix in their `PATH` by default. You can fix this by running `sudo launchctl config user path "$(brew --prefix)/bin:${PATH}"` and then rebooting, as documented in `man launchctl`. Note that this sets the `launchctl` `PATH` for *all users*.
 
