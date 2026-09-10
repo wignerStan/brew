@@ -1,4 +1,4 @@
-# Final native overlay review
+# Final Native Overlay Review
 
 > **Historical review.** This document assesses implementation commit
 > `3ec474c` and preserves the release-blocking findings that drove the
@@ -19,20 +19,20 @@ user prefix: $HOME/.linuxbrew
 
 **Reject this implementation for production deployment.**
 
-The final tree improves the original prototype substantially, and its Git/source
+The final tree improves the original prototype substantially and its Git/source
 handoff is recoverable from the complete delivery archive. However, the package
 manager itself still has two release-blocking state-machine defects and several
 high-severity command/rollback gaps. In particular, a concurrent read-only
-`brew` process can delete another live process's installation transaction, and
+`brew` process can delete another live process's installation transaction and
 the native version-union synchronizer is not convergent.
 
 The prior review-closure document's statement that all actionable R1–R12 issues
 are closed is therefore not supported by the final implementation. R2 and R7
-must be reopened, and the version-union defects are new release blockers.
+must be reopened and the version-union defects are new release blockers.
 
 ## Severity-ranked findings
 
-### F1 — Critical: startup recovery deletes live installation transactions
+### F1 — critical: startup recovery deletes live installation transactions
 
 `FormulaTransaction#start!` creates a durable journal in state `staging` and a
 staging rack, but it does not hold the overlay synchronization lock or a
@@ -69,7 +69,7 @@ post-install work.
 non-blockingly and recover only when it can prove no live owner holds it. A PID
 check alone is insufficient because of PID reuse.
 
-### F2 — Critical: version-union synchronization is not a fixed point
+### F2 — critical: version-union synchronization is not a fixed point
 
 For a real user rack, `homebrew-overlay-build-view` records a lower version only
 when the destination child is missing:
@@ -99,7 +99,7 @@ CONFIRMED: repeated union-rack reconciliation alternately removes and recreates 
 
 This affects normal operation whenever a new administrator version is first
 added to an existing local rack: the first generation change adds it, a later
-package generation removes it, and a later generation re-adds it. Formula
+package generation removes it and a later generation re-adds it. Formula
 visibility and dependency resolution therefore depend on synchronization
 parity.
 
@@ -108,7 +108,7 @@ child on every reconciliation. An exact existing symlink should remain in the
 desired map; a missing child should be created; a real local child should shadow
 the lower child; and every other existing object should be a hard conflict.
 
-### F3 — High: inherited version children are not target-validated or reliably managed
+### F3 — high: inherited version children are not target-validated or reliably managed
 
 The same existence-only condition accepts any symlink or filesystem object at a
 base version name. Synchronization neither verifies that a symlink points to the
@@ -136,7 +136,7 @@ the target path and can block a later installation of that version.
 transaction-created and synchronizer-created children. The exact expected
 symlink must always be represented in the committed desired state.
 
-### F4 — High: `brew uninstall --force` rejects mixed local/inherited racks
+### F4 — high: `brew uninstall --force` rejects mixed local/inherited racks
 
 The force path resolves every child of the rack:
 
@@ -166,7 +166,7 @@ set.
 inherited sets. Remove only local kegs; reject only when no local keg was
 requested or when the operation would otherwise require mutating the base.
 
-### F5 — High: rollback is atomic only for the Cellar rack, not for installation side effects
+### F5 — high: rollback is atomic only for the cellar rack, not for installation side effects
 
 After rack publication, `FormulaInstaller#finish` performs native linking,
 service-file generation, dynamic-linkage repair, global post-install work,
@@ -199,10 +199,10 @@ side effects are handled.
 **Required correction:** either journal and reverse every touched external path,
 or narrow the guarantee explicitly to rack publication and redesign finish
 semantics. At minimum, rollback should use native keg unlink cleanup for
-installed link metadata and have defined handling for `etc`, `var`, service,
+installed link metadata and have defined handling for `etc`, `var`, service
 and post-install effects.
 
-### F6 — Medium: autoremove excludes valid local candidates when any base version exists
+### F6 — medium: autoremove excludes valid local candidates when any base version exists
 
 `Cleanup.autoremove` rejects a formula when any installed keg is inherited:
 
@@ -224,7 +224,7 @@ Library/Homebrew/cleanup.rb:935-938
 the inherited fallback in the dependency graph; do not reject the formula as a
 whole.
 
-### F7 — Medium: explicit generations are not transactionally coupled to every mutation
+### F7 — medium: explicit generations are not transactionally coupled to every mutation
 
 The fast path trusts explicit generation files and performs no structural scan
 when they match the saved stamp. Generation bumps occur after native Cellar or
@@ -245,17 +245,17 @@ Generation files improve performance and drift detection but are not a
 crash-consistent mutation journal.
 
 **Required correction:** mark the prefix dirty before a mutation, publish the
-new generation only after success, and force structural reconciliation while a
+new generation only after success and force structural reconciliation while a
 dirty marker exists. Recovery must clear the marker only after validating the
 resulting package view.
 
-### F8 — Medium: individually surfaced final directory is not checksum-complete
+### F8 — medium: individually surfaced final directory is not checksum-complete
 
 The complete delivery archive is intact and its SHA-256/checksum manifest pass.
 However, the separately surfaced directory
 `/mnt/data/brew-6.0.15-native-overlay-final` contains `SHA256SUMS` entries for 12
 files that are absent, including the README, review file, Git-state file,
-patch-series manifest, seven format patches, and restore script.
+patch-series manifest, seven format patches and restore script.
 
 Executed result:
 
@@ -287,7 +287,7 @@ or regular-file rollback effects.
 
 ## Static-only findings
 
-F4, F6, and F7 are established from deterministic source control flow but were
+F4, F6 and F7 are established from deterministic source control flow but were
 not exercised through the complete Homebrew CLI. They must be converted into
 Ruby/CLI regressions before release.
 
@@ -297,7 +297,7 @@ The environment does not contain Homebrew's requested Ruby 4.0.6 development
 runtime and gem set. Dependency downloads are prohibited. Therefore the
 following remain blocked:
 
-- complete RSpec, RuboCop, and Sorbet runs;
+- complete RSpec, RuboCop and Sorbet runs;
 - real bottle and source installations;
 - real process-kill injection at transaction phases;
 - concurrent `brew list`/`brew install` integration under the full CLI;

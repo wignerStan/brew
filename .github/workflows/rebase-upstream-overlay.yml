@@ -1,50 +1,327 @@
-name: Rebase overlay branch onto upstream
+name: Rebase and validate overlay branch
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "17 4 * * *"
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: rebase-overlay-branch
   cancel-in-progress: false
 
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
 jobs:
-  rebase:
-    if: github.repository == 'wignerStan/brew'
+  prepare:
+    if: github.repository == 'wangzheng15534-blip/brew'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.rebase.outputs.changed }}
+      before: ${{ steps.rebase.outputs.before }}
+      after: ${{ steps.rebase.outputs.after }}
+      tree: ${{ steps.rebase.outputs.tree }}
+      upstream: ${{ steps.rebase.outputs.upstream }}
+      bundle_sha256: ${{ steps.bundle.outputs.sha256 }}
     steps:
-      - name: Check out the custom branch
-        uses: actions/checkout@v4
+      - name: Check out the deployment branch without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: overlay-store
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Rebase onto upstream Homebrew main
+      - name: Rebase onto current Homebrew main
+        id: rebase
         shell: bash
         run: |
           set -euo pipefail
 
+          export PATH=/usr/bin:/bin
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git remote add upstream https://github.com/Homebrew/brew.git
+          git config core.hooksPath /dev/null
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --prune origin overlay-store
           git fetch --prune upstream main
+          git checkout --detach origin/overlay-store
 
-          before=$(git rev-parse HEAD)
-          if ! git rebase upstream/main; then
+          before="$(git rev-parse HEAD)"
+          upstream="$(git rev-parse upstream/main)"
+          printf 'before=%s\n' "${before}" >>"${GITHUB_OUTPUT}"
+          printf 'upstream=%s\n' "${upstream}" >>"${GITHUB_OUTPUT}"
+          if ! git -c core.hooksPath=/dev/null rebase "${upstream}"; then
             git rebase --abort || true
-            echo "Upstream rebase has conflicts; overlay-store was left unchanged." >&2
+            echo "Upstream rebase has semantic conflicts; overlay-store was left unchanged." >&2
             exit 1
           fi
 
-          after=$(git rev-parse HEAD)
-          if [[ "$before" == "$after" ]]; then
-            echo "overlay-store is already based on upstream/main."
-            exit 0
+          after="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
+          if [[ "${before}" == "${after}" ]]; then
+            printf 'changed=false\n' >>"${GITHUB_OUTPUT}"
+          else
+            printf 'changed=true\n' >>"${GITHUB_OUTPUT}"
           fi
 
-          git push --force-with-lease origin HEAD:overlay-store
+      - name: Create a hash-addressed candidate bundle
+        if: steps.rebase.outputs.changed == 'true'
+        id: bundle
+        shell: bash
+        env:
+          BEFORE: ${{ steps.rebase.outputs.before }}
+          AFTER: ${{ steps.rebase.outputs.after }}
+          EXPECTED_TREE: ${{ steps.rebase.outputs.tree }}
+          UPSTREAM: ${{ steps.rebase.outputs.upstream }}
+        run: |
+          set -euo pipefail
+
+          export PATH=/usr/bin:/bin
+          test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
+          test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          /usr/bin/git merge-base --is-ancestor "${UPSTREAM}" "${AFTER}"
+
+          bundle_dir="${RUNNER_TEMP}/overlay-rebase-candidate"
+          /usr/bin/install -d -m 0700 "${bundle_dir}"
+          bundle="${bundle_dir}/candidate.bundle"
+          candidate_ref=refs/overlay-bundle/candidate
+          /usr/bin/git update-ref "${candidate_ref}" "${AFTER}"
+          trap '/usr/bin/git update-ref -d refs/overlay-bundle/candidate' EXIT
+          /usr/bin/git bundle create "${bundle}" "${candidate_ref}" "^${UPSTREAM}"
+          /usr/bin/git bundle verify "${bundle}"
+          sha256="$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')"
+          test "${#sha256}" -eq 64
+          printf 'sha256=%s\n' "${sha256}" >>"${GITHUB_OUTPUT}"
+
+      - name: Upload the immutable candidate bundle
+        if: steps.rebase.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: overlay-rebase-candidate
+          path: ${{ runner.temp }}/overlay-rebase-candidate/candidate.bundle
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      validated_sha: ${{ steps.attest.outputs.sha }}
+      validated_tree: ${{ steps.attest.outputs.tree }}
+      validated_bundle_sha256: ${{ steps.attest.outputs.bundle_sha256 }}
+    steps:
+      - name: Check out the exact comparison base on a fresh runner
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.before }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the candidate bundle from this workflow run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: overlay-rebase-candidate
+          path: ${{ runner.temp }}/overlay-rebase-candidate
+
+      - name: Verify and import the exact candidate
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          UPSTREAM: ${{ needs.prepare.outputs.upstream }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.bundle_sha256 }}
+        run: |
+          set -euo pipefail
+
+          export PATH=/usr/bin:/bin
+          bundle="${RUNNER_TEMP}/overlay-rebase-candidate/candidate.bundle"
+          test "$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')" = "${BUNDLE_SHA256}"
+
+          /usr/bin/git config core.hooksPath /dev/null
+          /usr/bin/git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            /usr/bin/git remote set-url upstream https://github.com/Homebrew/brew.git
+          /usr/bin/git fetch --prune upstream main
+          /usr/bin/git cat-file -e "${UPSTREAM}^{commit}"
+          /usr/bin/git merge-base --is-ancestor "${UPSTREAM}" upstream/main
+          /usr/bin/git bundle verify "${bundle}"
+          bundle_refs="$(/usr/bin/git bundle unbundle "${bundle}")"
+          bundle_sha="$(
+            printf '%s\n' "${bundle_refs}" |
+              /usr/bin/awk '$2 == "refs/overlay-bundle/candidate" { print $1 }'
+          )"
+          test "${bundle_sha}" = "${AFTER}"
+          /usr/bin/git checkout --detach "${AFTER}"
+          test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
+          test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          /usr/bin/git merge-base --is-ancestor "${UPSTREAM}" "${AFTER}"
+
+      - name: Validate patch formatting and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check upstream/main...HEAD
+          bash -n bin/brew Library/Homebrew/utils/overlay.sh
+          while IFS= read -r test_script; do
+            bash -n "${test_script}"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile Library/Homebrew/test/support/overlay_style_delta_check.py
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Reject style offenses on the rebased overlay delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Attest the exact validated object after candidate execution
+        id: attest
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.bundle_sha256 }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          bundle="${RUNNER_TEMP}/overlay-rebase-candidate/candidate.bundle"
+          test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
+          test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          test "$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')" = "${BUNDLE_SHA256}"
+          printf 'sha=%s\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
+          printf 'bundle_sha256=%s\n' "${BUNDLE_SHA256}" >>"${GITHUB_OUTPUT}"
+
+  promote:
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.changed == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: overlay-promotion
+    permissions: {}
+    steps:
+      - name: Download the exact validated bundle on a fresh runner
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: overlay-rebase-candidate
+          path: ${{ runner.temp }}/overlay-rebase-candidate
+
+      - name: Promote only the verified commit without executing candidate files
+        shell: bash
+        env:
+          BEFORE: ${{ needs.prepare.outputs.before }}
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          UPSTREAM: ${{ needs.prepare.outputs.upstream }}
+          BUNDLE_SHA256: ${{ needs.prepare.outputs.bundle_sha256 }}
+          VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
+          VALIDATED_TREE: ${{ needs.validate.outputs.validated_tree }}
+          VALIDATED_BUNDLE_SHA256: ${{ needs.validate.outputs.validated_bundle_sha256 }}
+          OVERLAY_PROMOTION_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OVERLAY_PROMOTION_TOKEN}" ]]; then
+            echo "::error::OVERLAY_PROMOTION_TOKEN must grant Contents and Workflows write access to wangzheng15534-blip/brew"
+            exit 1
+          fi
+          test "${AFTER}" = "${VALIDATED_SHA}"
+          test "${EXPECTED_TREE}" = "${VALIDATED_TREE}"
+          test "${BUNDLE_SHA256}" = "${VALIDATED_BUNDLE_SHA256}"
+
+          export PATH=/usr/bin:/bin
+          isolated_home="$(mktemp -d)"
+          repository="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}" "${repository}" "${template_dir}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${OVERLAY_PROMOTION_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          bundle="${RUNNER_TEMP}/overlay-rebase-candidate/candidate.bundle"
+          test "$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')" = "${BUNDLE_SHA256}"
+
+          /usr/bin/git init "${repository}"
+          /usr/bin/git -C "${repository}" config core.hooksPath /dev/null
+          /usr/bin/git -C "${repository}" config transfer.fsckObjects true
+          /usr/bin/git -C "${repository}" config fetch.fsckObjects true
+          /usr/bin/git -C "${repository}" remote add origin \
+            https://github.com/wangzheng15534-blip/brew.git
+          /usr/bin/git -C "${repository}" remote add upstream \
+            https://github.com/Homebrew/brew.git
+          test "$(/usr/bin/git -C "${repository}" remote get-url origin)" = \
+            "https://github.com/wangzheng15534-blip/brew.git"
+          test "$(/usr/bin/git -C "${repository}" remote get-url upstream)" = \
+            "https://github.com/Homebrew/brew.git"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -C "${repository}" -c protocol.ext.allow=never \
+              fetch --no-tags --prune origin \
+              +refs/heads/overlay-store:refs/remotes/origin/overlay-store
+          GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -C "${repository}" -c protocol.ext.allow=never \
+              fetch --no-tags --prune upstream \
+              +refs/heads/main:refs/remotes/upstream/main
+
+          test "$(/usr/bin/git -C "${repository}" rev-parse refs/remotes/origin/overlay-store)" = "${BEFORE}"
+          /usr/bin/git -C "${repository}" cat-file -e "${UPSTREAM}^{commit}"
+          /usr/bin/git -C "${repository}" merge-base --is-ancestor \
+            "${UPSTREAM}" refs/remotes/upstream/main
+
+          /usr/bin/git -C "${repository}" bundle verify "${bundle}"
+          bundle_refs="$(/usr/bin/git -C "${repository}" bundle unbundle "${bundle}")"
+          bundle_sha="$(
+            printf '%s\n' "${bundle_refs}" |
+              /usr/bin/awk '$2 == "refs/overlay-bundle/candidate" { print $1 }'
+          )"
+          test "${bundle_sha}" = "${AFTER}"
+          test "$(/usr/bin/git -C "${repository}" rev-parse "${AFTER}^{tree}")" = "${EXPECTED_TREE}"
+          /usr/bin/git -C "${repository}" merge-base --is-ancestor "${UPSTREAM}" "${AFTER}"
+          test -z "$(/usr/bin/git -C "${repository}" rev-list --merges "${UPSTREAM}..${AFTER}")"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            /usr/bin/git -C "${repository}" push \
+              --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+              origin "${AFTER}:refs/heads/overlay-store"

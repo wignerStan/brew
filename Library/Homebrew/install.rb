@@ -767,7 +767,7 @@ module Homebrew
         # restore previous installation state if build failed
         begin
           unless formula&.latest_version_installed?
-            inherited_link = false
+            inherited_link = T.let(false, T::Boolean)
             linked_kegs&.each do |keg|
               if Homebrew::Overlay.inherited_keg?(keg.to_path)
                 inherited_link = true

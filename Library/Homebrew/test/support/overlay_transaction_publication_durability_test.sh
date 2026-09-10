@@ -7,7 +7,9 @@ repo="$(cd "${repo}" && pwd -P)"
 # shellcheck source=../../utils/overlay.sh
 source "${repo}/Library/Homebrew/utils/overlay.sh"
 
-python3 - "${repo}/Library/Homebrew/overlay.rb" "${repo}/Library/Homebrew/utils/overlay.sh" <<'PY'
+python3 \
+  - "${repo}/Library/Homebrew/overlay/core.rb" \
+  "${repo}/Library/Homebrew/utils/overlay/core.sh" <<'PY'
 from pathlib import Path
 import sys
 

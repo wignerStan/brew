@@ -1,4 +1,4 @@
-# Native overlay review results
+# Native Overlay Review Results
 
 > **Historical results.** These checks describe an earlier reviewed tree.
 > Current corrections and acceptance limits are recorded in
@@ -82,10 +82,10 @@ canonical_implementation_tree=634ad66358d6f3501b96a0c0e698e62b9a850b3a
 ## Blocked checks
 
 - Homebrew's requested Ruby is `4.0.6`; the available runtime is Ruby `3.3.8`.
-- The complete native RSpec, RuboCop, and Sorbet dependency set was not present.
+- The complete native RSpec, RuboCop and Sorbet dependency set was not present.
 - ShellCheck was not installed.
 - Real bottle/source installation, arbitrary casks, process-kill injection into
-  the Ruby installer, and concurrent administrator updates were not executed.
+  the Ruby installer and concurrent administrator updates were not executed.
 - A native `brew doctor` integration run was not accepted as evidence because
   the available compatibility runtime attempted to resolve missing local gems
   and API metadata. The dangerous multiple-Cellar remediation is established by

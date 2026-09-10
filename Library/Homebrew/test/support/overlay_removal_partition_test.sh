@@ -8,16 +8,20 @@ set -euo pipefail
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
 
-python3 - \
-  "${repo}/Library/Homebrew/uninstall.rb" \
-  "${repo}/Library/Homebrew/cleanup.rb" \
-  "${repo}/Library/Homebrew/utils/autoremove.rb" <<'PY'
+source_files=(
+  "${repo}/Library/Homebrew/uninstall.rb"
+  "${repo}/Library/Homebrew/cleanup.rb"
+  "${repo}/Library/Homebrew/utils/autoremove.rb"
+  "${repo}/Library/Homebrew/keg.rb"
+)
+python3 - "${source_files[@]}" <<'PY'
 from pathlib import Path
 import sys
 
 uninstall = Path(sys.argv[1]).read_text(encoding="utf-8")
 cleanup = Path(sys.argv[2]).read_text(encoding="utf-8")
 autoremove = Path(sys.argv[3]).read_text(encoding="utf-8")
+keg = Path(sys.argv[4]).read_text(encoding="utf-8")
 
 uninstall_start = uninstall.index("    def self.uninstall_kegs(")
 uninstall_end = uninstall.index("\n    sig {", uninstall_start)
@@ -70,6 +74,22 @@ autoremove_required = [
 missing = [fragment for fragment in autoremove_required if fragment not in autoremove]
 if missing:
     raise SystemExit(f"autoremove cannot resolve metadata through the selected local keg: {missing}")
+
+# An interrupted private uninstall must never leave opt/linked records pointing
+# at a keg that has already been removed. Namespace cleanup must precede the
+# destructive Cellar boundary, and inherited restoration must follow it.
+keg_start = keg.index("  def uninstall(raise_failures: false)")
+keg_end = keg.index("\n  sig { void }\n  def ignore_interrupts_and_uninstall!", keg_start)
+keg_method = keg[keg_start:keg_end]
+keg_order = [
+    "remove_opt_record if optlinked?",
+    "remove_linked_keg_record if linked?",
+    "FileUtils.rm_r(path)",
+    "Homebrew::Overlay.restore_inherited_rack!(name)",
+]
+positions = [keg_method.index(fragment) for fragment in keg_order]
+if positions != sorted(positions) or len(set(positions)) != len(positions):
+    raise SystemExit(f"private uninstall crash-safe ordering regressed: {list(zip(keg_order, positions))}")
 PY
 
 printf 'overlay removal partition test: PASS\n'
