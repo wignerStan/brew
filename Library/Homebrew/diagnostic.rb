@@ -593,7 +593,7 @@ module Homebrew
               Local formulae were built against a different administrator base generation:
               #{displayed.join("\n")}
             EOS
-            tier: :unsupported,
+            tier:        :unsupported,
             remediation: <<~EOS,
               Reinstall the affected local formulae after the administrator base update finishes:
                 brew reinstall #{formulae.join(" ")}

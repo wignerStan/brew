@@ -684,17 +684,17 @@ class Keg
     tab.aliases || []
   end
 
-  sig do
+  sig {
     params(
       verbose:         T::Boolean,
       dry_run:         T::Boolean,
       overwrite:       T::Boolean,
       record_mutation: T::Boolean,
     ).void
-  end
+  }
   def optlink(verbose: false, dry_run: false, overwrite: false, record_mutation: true)
     owns_overlay_mutation = record_mutation && !dry_run && Homebrew::EnvConfig.overlay? &&
-      !Homebrew::Overlay.mutation_active?
+                            !Homebrew::Overlay.mutation_active?
     Homebrew::Overlay.begin_mutation! if owns_overlay_mutation
     remove_old_aliases
     opt_record.delete if opt_record.symlink? || opt_record.exist?

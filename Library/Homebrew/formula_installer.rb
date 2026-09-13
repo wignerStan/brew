@@ -1212,7 +1212,7 @@ on_request: installed_on_request?, options:)
     with_env(
       **@overlay_install_session.build_environment,
       HOMEBREW_BUILD_STAGING_PATH: staging_path,
-      HOMEBREW_BUILD_FETCH_PHASE: nil,
+      HOMEBREW_BUILD_FETCH_PHASE:  nil,
     ) do
       Sandbox.run_or_fork(*build_args(formula_path), step: "building", retain_tmp:, debug: debug?) do |sandbox|
         add_build_sandbox_rules(sandbox, formula_path, log_name: "build")
@@ -1272,7 +1272,7 @@ on_request: installed_on_request?, options:)
     retain_tmp = keep_tmp? || debug_symbols? || interactive?
     with_env(
       **@overlay_install_session.build_environment,
-      HOMEBREW_BUILD_FETCH_PHASE: "1",
+      HOMEBREW_BUILD_FETCH_PHASE:  "1",
       HOMEBREW_BUILD_STAGING_PATH: staging_path,
     ) do
       Sandbox.run_or_fork(*build_args(formula_path), step: "fetching", retain_tmp:, debug: debug?) do |sandbox|

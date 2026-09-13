@@ -1108,7 +1108,7 @@ class Formula
   # The parent of the prefix; the named directory in the Cellar containing all
   # installed versions of this software.
   sig { returns(Pathname) }
-  def rack = Homebrew::Overlay.install_rack(name) || HOMEBREW_CELLAR/name
+  def rack = Homebrew::Overlay.install_rack(name) || (HOMEBREW_CELLAR/name)
 
   # All currently installed prefix directories. A staged overlay realization
   # participates in installer queries without replacing the inherited active

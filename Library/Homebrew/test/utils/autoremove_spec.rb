@@ -141,8 +141,8 @@ RSpec.describe Utils::Autoremove do
         Tab,
         installed_on_request:          false,
         installed_on_request_present?: true,
-        poured_from_bottle:             true,
-        runtime_dependencies:           nil,
+        poured_from_bottle:            true,
+        runtime_dependencies:          nil,
       )
       local_keg = instance_double(Keg, tab: local_tab)
       expect(first_formula_dep).not_to receive(:any_installed_keg)
