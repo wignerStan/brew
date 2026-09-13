@@ -45,6 +45,7 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           def replace_once(path: str, old: str, new: str) -> None:
               file_path = Path(path)
@@ -56,70 +57,44 @@ jobs:
 
           replace_once(
               "Library/Homebrew/formula_installer.rb",
-              """        unlock
-              end
-            end
-            raise
-            raise
-          end
-          """,
-              """        unlock
-              end
-            end
-            raise
-          end
-          """,
+              "\n    raise\n    raise\n  end\n\n  sig { void }\n  def check_conflicts",
+              "\n    raise\n  end\n\n  sig { void }\n  def check_conflicts",
           )
 
-          replace_once(
-              "Library/Homebrew/keg.rb",
-              """  rescue => e
-            raise if dry_run || e.is_a?(AlreadyLinkedError)
-
-            unlink(verbose:)
-          rescue => e
-            raise if dry_run || e.is_a?(AlreadyLinkedError)
-
-            unlink(verbose:)
-          """,
-              """  rescue => e
-            raise if dry_run || e.is_a?(AlreadyLinkedError)
-
-            unlink(verbose:)
-          """,
+          keg_path = Path("Library/Homebrew/keg.rb")
+          keg = keg_path.read_text(encoding="utf-8")
+          duplicate_rescue = re.compile(
+              r"  rescue => e\n"
+              r"    raise if dry_run \|\| e\.is_a\?\(AlreadyLinkedError\)\n\n"
+              r"    unlink\(verbose:\)\n"
+              r"(?=  rescue => e\n"
+              r"    raise if dry_run \|\| e\.is_a\?\(AlreadyLinkedError\)\n\n"
+              r"    unlink\(verbose:\)\n"
+              r"    @overwritten_cask_symlinks)"
           )
+          keg, count = duplicate_rescue.subn("", keg)
+          if count != 1:
+              raise SystemExit(f"Library/Homebrew/keg.rb: expected one duplicate rescue, found {count}")
+          keg_path.write_text(keg, encoding="utf-8")
 
           replace_once(
               "Library/Homebrew/test/cmd/unlink_spec.rb",
-              """    expect(binary).to be_a_symlink
-
-          it \"rejects unlink before side effects when an administrator fallback exists\" do
-          """,
-              """    expect(binary).to be_a_symlink
-            end
-
-          it \"rejects unlink before side effects when an administrator fallback exists\" do
-          """,
+              "    expect(binary).to be_a_symlink\n\n  it \"rejects unlink before side effects",
+              "    expect(binary).to be_a_symlink\n  end\n\n  it \"rejects unlink before side effects",
           )
 
           replace_once(
               "Library/Homebrew/test/cmd/postinstall_spec.rb",
-              """    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file
-
-          it \"rejects inherited formulae before running post-install code\" do
-          """,
-              """    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file
-            end
-
-          it \"rejects inherited formulae before running post-install code\" do
-          """,
+              "    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file\n\n  it \"rejects inherited formulae",
+              "    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file\n  end\n\n  it \"rejects inherited formulae",
           )
           PY
 
           git diff --check
           while IFS= read -r ruby_file; do
+            [[ -n "${ruby_file}" ]] || continue
             ruby -c "${ruby_file}" >/dev/null
-          done < <(git diff --name-only "${UPSTREAM_SHA}...HEAD" -- '*.rb' | sort)
+          done < <(git diff --name-only "${UPSTREAM_SHA}" -- '*.rb' | sort)
 
       - name: Amend the single upstream-rooted candidate
         id: candidate
