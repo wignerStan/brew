@@ -46,15 +46,17 @@ jobs:
           test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
           test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
 
-      - name: Normalize shell structures and format the complete changed shell delta
+      - name: Refactor formatter-hostile heredocs and format the shell delta
         id: repair
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           BACKSLASH = chr(92)
+          PYTHON_HEREDOC = re.compile(r"<<(?:'PY'|\"PY\"|PY)\s*$")
 
           def read_lines(path: str) -> list[str]:
               return Path(path).read_text(encoding="utf-8").splitlines()
@@ -86,72 +88,61 @@ jobs:
               lines[matches[0]] = new
               write_lines(path, lines)
 
-          def normalize_python_heredoc_command(path: str) -> None:
+          def externalize_python_validator(path: str) -> Path:
+              shell_path = Path(path)
               lines = read_lines(path)
-              continued_launchers = {
-                  "python3 - " + BACKSLASH: True,
-                  "python3 " + BACKSLASH: False,
-              }
-              starts = [
+              openers = [
                   index
                   for index, line in enumerate(lines)
-                  if line in continued_launchers
+                  if PYTHON_HEREDOC.search(line)
               ]
-              if not starts:
-                  normalized = [
-                      index
-                      for index, line in enumerate(lines)
-                      if line.startswith("python3 - ") and " <<" in line
-                  ]
-                  if len(normalized) == 1:
-                      return
+              if len(openers) != 1:
                   raise SystemExit(
-                      f"{path}: expected one continued or normalized Python heredoc launcher, "
-                      f"found continued=0 normalized={len(normalized)}"
-                  )
-              if len(starts) != 1:
-                  raise SystemExit(
-                      f"{path}: expected exactly one continued Python heredoc launcher, found {len(starts)}"
+                      f"{path}: expected exactly one Python heredoc opener, found {len(openers)}"
                   )
 
-              start = starts[0]
-              dash_on_launcher = continued_launchers[lines[start]]
-              arguments: list[str] = []
-              marker = ""
-              end = start + 1
-              while end < len(lines):
-                  line = lines[end].strip()
-                  if not arguments and not dash_on_launcher:
-                      if not line.startswith("- "):
-                          raise SystemExit(
-                              f"{path}: split Python launcher is missing its '-' argument"
-                          )
-                      line = line[2:]
+              opener = openers[0]
+              terminators = [
+                  index
+                  for index in range(opener + 1, len(lines))
+                  if lines[index] == "PY"
+              ]
+              if len(terminators) != 1:
+                  raise SystemExit(
+                      f"{path}: expected exactly one Python heredoc terminator, found {len(terminators)}"
+                  )
 
-                  if " <<" in line:
-                      argument, marker_suffix = line.split(" <<", 1)
-                      arguments.append(argument)
-                      marker = "<<" + marker_suffix
-                      break
+              terminator = terminators[0]
+              body = lines[opener + 1:terminator]
+              if not body:
+                  raise SystemExit(f"{path}: Python validator body is empty")
 
-                  continuation = " " + BACKSLASH
-                  if not line.endswith(continuation):
-                      raise SystemExit(
-                          f"{path}: malformed continued Python argument at line {end + 1}: {line!r}"
-                      )
-                  arguments.append(line[:-len(continuation)])
-                  end += 1
+              stem = shell_path.stem
+              if not stem.endswith("_test"):
+                  raise SystemExit(f"{path}: expected a *_test.sh filename")
+              validator_path = shell_path.with_name(
+                  f"{stem.removesuffix('_test')}_validator.py"
+              )
+              if validator_path.exists():
+                  raise SystemExit(f"{validator_path}: refusing to overwrite an existing file")
 
-              if not marker or not arguments:
-                  raise SystemExit(f"{path}: Python heredoc boundary was not found")
+              validator_path.write_text("\n".join(body) + "\n", encoding="utf-8")
+              compile(
+                  validator_path.read_text(encoding="utf-8"),
+                  str(validator_path),
+                  "exec",
+              )
 
-              replacement = ["python_sources=("]
-              replacement.extend(f"  {argument}" for argument in arguments)
-              replacement.extend([
-                  ")",
-                  'python3 - "' + "$" + '{python_sources[@]}" ' + marker,
-              ])
-              write_lines(path, lines[:start] + replacement + lines[end + 1:])
+              redirection = '< "${BASH_SOURCE[0]%_test.sh}_validator.py"'
+              launcher = PYTHON_HEREDOC.sub(redirection, lines[opener])
+              rewritten = lines[:opener] + [launcher] + lines[terminator + 1:]
+              write_lines(path, rewritten)
+
+              if any(PYTHON_HEREDOC.search(line) for line in rewritten):
+                  raise SystemExit(f"{path}: Python heredoc opener remains after extraction")
+              if "PY" in rewritten:
+                  raise SystemExit(f"{path}: Python heredoc terminator remains after extraction")
+              return validator_path
 
           workflow = ".github/workflows/rebase-upstream-overlay.yml"
           replace_exact_lines(
@@ -200,13 +191,18 @@ jobs:
               ],
           )
 
-          for path in [
-              "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
-              "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
-              "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
-              "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
-          ]:
-              normalize_python_heredoc_command(path)
+          validator_paths = [
+              externalize_python_validator(path)
+              for path in [
+                  "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
+                  "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+                  "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
+                  "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
+              ]
+          ]
+          print("Externalized validators:")
+          for validator_path in validator_paths:
+              print(f"  {validator_path}")
           PY
 
           mapfile -d '' shell_files < <(
@@ -214,20 +210,30 @@ jobs:
               upstream/main...HEAD -- '*.sh'
           )
           test "${#shell_files[@]}" -gt 0
-
-          set +e
           bin/brew style --fix --display-cop-names "${shell_files[@]}"
-          style_status=$?
-          set -e
-          printf 'Homebrew shell style autofix exit status: %s\n' "${style_status}"
 
           for shell_file in "${shell_files[@]}"; do
             bash -n "${shell_file}"
           done
+
+          validator_files=(
+            Library/Homebrew/test/support/overlay_commit_boundary_validator.py
+            Library/Homebrew/test/support/overlay_rebase_workflow_validator.py
+            Library/Homebrew/test/support/overlay_removal_partition_validator.py
+            Library/Homebrew/test/support/overlay_transaction_publication_durability_validator.py
+          )
+          for validator_file in "${validator_files[@]}"; do
+            test -s "${validator_file}"
+            python3 -c \
+              'import ast, pathlib, sys; path = pathlib.Path(sys.argv[1]); ast.parse(path.read_text(), filename=str(path))' \
+              "${validator_file}"
+          done
+
           git diff --check
           printf 'shell_count=%s\n' "${#shell_files[@]}" >>"${GITHUB_OUTPUT}"
+          printf 'validator_count=%s\n' "${#validator_files[@]}" >>"${GITHUB_OUTPUT}"
 
-      - name: Commit the final style repair
+      - name: Commit the final style and maintainability repair
         id: commit
         shell: bash
         run: |
@@ -236,12 +242,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config commit.gpgsign false
           git config core.hooksPath /dev/null
-          git add -u
+          git add -A
           if git diff --cached --quiet; then
             echo "Final style repair produced no tracked changes." >&2
             exit 1
           fi
-          git commit -m "Finish overlay workflow and shell style cleanup"
+          git commit -m "Extract overlay validators and finish style cleanup"
           after="$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
           printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
@@ -271,7 +277,9 @@ jobs:
         env:
           AFTER: ${{ steps.commit.outputs.after }}
           SHELL_COUNT: ${{ steps.repair.outputs.shell_count }}
+          VALIDATOR_COUNT: ${{ steps.repair.outputs.validator_count }}
         run: |
           printf 'Style-clean candidate: %s\n' "${AFTER:-not-created}"
           printf 'Changed shell files formatted: %s\n' "${SHELL_COUNT:-unknown}"
+          printf 'Python validators extracted: %s\n' "${VALIDATOR_COUNT:-unknown}"
           printf 'Result branch: %s\n' "${RESULT_BRANCH}"
