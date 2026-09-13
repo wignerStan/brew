@@ -86,17 +86,44 @@ jobs:
               lines[matches[0]] = new
               write_lines(path, lines)
 
-          def replace_python_heredoc_command(path: str, arguments: list[str]) -> None:
-              old = ["python3 - " + BACKSLASH]
-              old.extend(f"  {argument} {BACKSLASH}" for argument in arguments[:-1])
-              old.append(f"  {arguments[-1]} <<'PY'")
-              new = ["python_sources=("]
-              new.extend(f"  {argument}" for argument in arguments)
-              new.extend([
+          def normalize_python_heredoc_command(path: str) -> None:
+              lines = read_lines(path)
+              start_line = "python3 - " + BACKSLASH
+              starts = [index for index, line in enumerate(lines) if line == start_line]
+              if len(starts) != 1:
+                  raise SystemExit(
+                      f"{path}: expected exactly one continued Python heredoc launcher, found {len(starts)}"
+                  )
+
+              start = starts[0]
+              arguments: list[str] = []
+              marker = ""
+              end = start + 1
+              while end < len(lines):
+                  line = lines[end].strip()
+                  if " <<" in line:
+                      argument, marker_suffix = line.split(" <<", 1)
+                      arguments.append(argument)
+                      marker = "<<" + marker_suffix
+                      break
+                  continuation = " " + BACKSLASH
+                  if not line.endswith(continuation):
+                      raise SystemExit(
+                          f"{path}: malformed continued Python argument at line {end + 1}: {line!r}"
+                      )
+                  arguments.append(line[:-len(continuation)])
+                  end += 1
+
+              if not marker or not arguments:
+                  raise SystemExit(f"{path}: Python heredoc boundary was not found")
+
+              replacement = ["python_sources=("]
+              replacement.extend(f"  {argument}" for argument in arguments)
+              replacement.extend([
                   ")",
-                  "python3 - \"${python_sources[@]}\" <<'PY'",
+                  f'python3 - "${{python_sources[@]}}" {marker}',
               ])
-              replace_exact_lines(path, old, new)
+              write_lines(path, lines[:start] + replacement + lines[end + 1:])
 
           workflow = ".github/workflows/rebase-upstream-overlay.yml"
           replace_exact_lines(
@@ -145,43 +172,13 @@ jobs:
               ],
           )
 
-          replace_python_heredoc_command(
+          for path in [
               "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
-              [
-                  '"${source_file}"',
-                  '"${repo}/Library/Homebrew/install.rb"',
-                  '"${repo}/Library/Homebrew/unpack_strategy.rb"',
-              ],
-          )
-          replace_python_heredoc_command(
               "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
-              [
-                  '"${workflow}"',
-                  '"${repo}/.github/workflows/overlay-validation.yml"',
-                  '"${repo}/Library/Homebrew/test/support/overlay_final_review_reproducer.sh"',
-              ],
-          )
-          replace_python_heredoc_command(
               "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
-              [
-                  '"${overlay_core}"',
-                  '"${cleanup_source}"',
-                  '"${autoremove_source}"',
-                  '"${uninstall_source}"',
-                  '"${reinstall_source}"',
-                  '"${upgrade_source}"',
-                  '"${link_source}"',
-                  '"${unlink_source}"',
-              ],
-          )
-          replace_python_heredoc_command(
               "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
-              [
-                  '"${core}"',
-                  '"${install_session}"',
-                  '"${finalizer}"',
-              ],
-          )
+          ]:
+              normalize_python_heredoc_command(path)
           PY
 
           mapfile -d '' shell_files < <(
