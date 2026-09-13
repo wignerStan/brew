@@ -138,21 +138,21 @@ fi
 grep -q 'unsafe pending overlay transaction owner lock' "${lock_case}/stderr"
 grep -qx 'owner-victim' "${lock_case}/owner-victim"
 
-metadata="${work}/hardlinked-metadata"
-make_case "${metadata}"
-write_journal "${metadata}" txn-metadata staging
-printf 'staging\n' >"${metadata}/metadata-victim"
-rm "${metadata}/user/var/homebrew/overlay/transactions/txn-metadata/state"
-ln "${metadata}/metadata-victim" \
-  "${metadata}/user/var/homebrew/overlay/transactions/txn-metadata/state"
-activate "${metadata}"
-if homebrew-overlay-sync --force >"${metadata}/stdout" 2>"${metadata}/stderr"
+metadata_case="${work}/hardlinked-metadata"
+make_case "${metadata_case}"
+write_journal "${metadata_case}" txn-metadata staging
+printf 'staging\n' >"${metadata_case}/metadata-victim"
+rm "${metadata_case}/user/var/homebrew/overlay/transactions/txn-metadata/state"
+ln "${metadata_case}/metadata-victim" \
+  "${metadata_case}/user/var/homebrew/overlay/transactions/txn-metadata/state"
+activate "${metadata_case}"
+if homebrew-overlay-sync --force >"${metadata_case}/stdout" 2>"${metadata_case}/stderr"
 then
   echo 'hard-linked transaction metadata unexpectedly recovered' >&2
   exit 1
 fi
-grep -q 'unsafe overlay formula transaction metadata' "${metadata}/stderr"
-grep -qx 'staging' "${metadata}/metadata-victim"
+grep -q 'unsafe overlay formula transaction metadata' "${metadata_case}/stderr"
+grep -qx 'staging' "${metadata_case}/metadata-victim"
 
 trailing="${work}/trailing-metadata"
 make_case "${trailing}"
