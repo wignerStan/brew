@@ -13,13 +13,13 @@ module Utils
       # dependents that weren't installed on request and without
       # build dependencies for {Formula} installed from source.
       # @private
-      sig do
+      sig {
         params(
           formulae:          T::Array[Formula],
           casks:             T::Array[Cask::Cask],
           kegs_by_full_name: KegMap,
         ).returns(T::Array[Formula])
-      end
+      }
       def removable_formulae(formulae, casks, kegs_by_full_name: {})
         unused_formulae = unused_formulae_with_no_formula_dependents(formulae, kegs_by_full_name:)
         cask_dep_names = cask_dependent_formula_names(casks, formulae, kegs_by_full_name:)
@@ -29,13 +29,13 @@ module Utils
       # A set of names for all installed {Formula} objects that are {Cask} formula
       # dependencies (direct or transitive).
       # @private
-      sig do
+      sig {
         params(
           casks:             T::Array[Cask::Cask],
           formulae:          T::Array[Formula],
           kegs_by_full_name: KegMap,
         ).returns(T::Set[String])
-      end
+      }
       def cask_dependent_formula_names(casks, formulae, kegs_by_full_name: {})
         formulae_by_name = formulae.to_h { |f| [f.name, f] }
         names = casks.flat_map { |cask| cask.depends_on.formula }.flat_map do |name|
@@ -66,9 +66,9 @@ module Utils
       # dependents for bottles and without build {Formula} dependents
       # for those built from source.
       # @private
-      sig do
+      sig {
         params(formulae: T::Array[Formula], kegs_by_full_name: KegMap).returns(T::Array[Formula])
-      end
+      }
       def bottled_formulae_with_no_formula_dependents(formulae, kegs_by_full_name: {})
         names_to_keep = T.let(Set.new, T::Set[String])
         formulae.each do |formula|
@@ -106,9 +106,9 @@ module Utils
       # Recursive function that returns an array of {Formula} without
       # {Formula} dependents that weren't installed on request.
       # @private
-      sig do
+      sig {
         params(formulae: T::Array[Formula], kegs_by_full_name: KegMap).returns(T::Array[Formula])
-      end
+      }
       def unused_formulae_with_no_formula_dependents(formulae, kegs_by_full_name: {})
         unused_formulae = bottled_formulae_with_no_formula_dependents(formulae, kegs_by_full_name:).select do |f|
           tab = installed_keg(f, kegs_by_full_name)&.tab
