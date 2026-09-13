@@ -4,6 +4,7 @@
 require "env_config"
 require "fileutils"
 require "securerandom"
+require "system_command"
 require "utils/path"
 require "utils/popen"
 
@@ -1759,7 +1760,7 @@ module Homebrew
       raise TransactionFailure, "atomic overlay publication requires GNU mv with --exchange" unless mv
 
       begin
-        Homebrew.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s
+        SystemCommand.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s
       rescue ErrorDuringExecution, SystemCallError => e
         raise TransactionFailure, "atomic overlay rack exchange failed: #{e.message}"
       end
@@ -1976,9 +1977,15 @@ module Homebrew
       @mutation_lock = lock
 
       script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context
-      Homebrew.safe_system environment, "/bin/bash", script,
-                           "--mark-generation-dirty", HOMEBREW_PREFIX.to_s, **options
+      environment, file_descriptors = mutation_process_context
+      run_overlay_command!(
+        environment,
+        "/bin/bash",
+        script,
+        "--mark-generation-dirty",
+        HOMEBREW_PREFIX.to_s,
+        file_descriptors:,
+      )
     # Cleanup must also restore durable state for Interrupt and SystemExit.
     rescue Exception # rubocop:disable Lint/RescueException
       release_mutation_lock!
@@ -1996,9 +2003,15 @@ module Homebrew
       begin_mutation! unless mutation_active?
 
       script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context(finalize: true)
-      Homebrew.safe_system environment, "/bin/bash", script,
-                           "--bump-generation", HOMEBREW_PREFIX.to_s, **options
+      environment, file_descriptors = mutation_process_context(finalize: true)
+      run_overlay_command!(
+        environment,
+        "/bin/bash",
+        script,
+        "--bump-generation",
+        HOMEBREW_PREFIX.to_s,
+        file_descriptors:,
+      )
       release_mutation_lock!
     # Cleanup must also restore durable state for Interrupt and SystemExit.
     rescue Exception # rubocop:disable Lint/RescueException
@@ -2013,8 +2026,8 @@ module Homebrew
       begin_mutation! if mutation && !mutation_active?
 
       script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context(finalize: mutation, owner_transaction:)
-      Homebrew.safe_system environment, "/bin/bash", script, "--sync", **options
+      environment, file_descriptors = mutation_process_context(finalize: mutation, owner_transaction:)
+      run_overlay_command!(environment, "/bin/bash", script, "--sync", file_descriptors:)
       release_mutation_lock! if mutation
       @link_state_entries = nil
     # Cleanup must also restore durable state for Interrupt and SystemExit.
@@ -2025,19 +2038,50 @@ module Homebrew
 
     sig {
       params(
+        environment:      T::Hash[String, String],
+        executable:       T.any(String, Pathname),
+        arguments:        T.any(String, Pathname),
+        file_descriptors: T::Hash[Integer, File],
+      ).void
+    }
+    def self.run_overlay_command!(environment, executable, *arguments, file_descriptors:)
+      command = [executable, *arguments]
+      pid = Process.spawn(
+        environment,
+        executable.to_s,
+        *arguments.map(&:to_s),
+        file_descriptors,
+      )
+      waited = Process.wait2(pid)
+      if waited.nil?
+        raise TransactionFailure, "overlay helper process disappeared: #{command.join(" ")}"
+      end
+
+      _, status = waited
+      return if status.success?
+
+      failure = status.signaled? ? "signal #{status.termsig}" : "status #{status.exitstatus}"
+      raise TransactionFailure, "overlay helper command failed with #{failure}: #{command.join(" ")}"
+    rescue SystemCallError => e
+      raise TransactionFailure, "overlay helper command failed: #{e.message}"
+    end
+    private_class_method :run_overlay_command!
+
+    sig {
+      params(
         finalize:          T::Boolean,
         owner_transaction: T.nilable(FormulaTransaction),
-      ).returns([T::Hash[String, T.nilable(String)], T::Hash[T.untyped, T.untyped]])
+      ).returns([T::Hash[String, String], T::Hash[Integer, File]])
     }
     def self.mutation_process_context(finalize: false, owner_transaction: nil)
-      environment = T.let({}, T::Hash[String, T.nilable(String)])
-      options = T.let({}, T::Hash[T.untyped, T.untyped])
+      environment = T.let({}, T::Hash[String, String])
+      file_descriptors = T.let({}, T::Hash[Integer, File])
       mutation_lock = @mutation_lock
       if mutation_lock
         raise TransactionFailure, "overlay mutation lock is closed" if mutation_lock.closed?
 
         environment["HOMEBREW_OVERLAY_MUTATION_LOCK_FD"] = MUTATION_LOCK_DESCRIPTOR.to_s
-        options[MUTATION_LOCK_DESCRIPTOR] = mutation_lock
+        file_descriptors[MUTATION_LOCK_DESCRIPTOR] = mutation_lock
       end
       environment["HOMEBREW_OVERLAY_FINALIZE_MUTATION"] = "1" if finalize
 
@@ -2048,10 +2092,10 @@ module Homebrew
 
         environment["HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID"] = owner_transaction.id
         environment["HOMEBREW_OVERLAY_OWNER_TRANSACTION_LOCK_FD"] = TRANSACTION_LOCK_DESCRIPTOR.to_s
-        options[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock
+        file_descriptors[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock
       end
 
-      [environment, options]
+      [environment, file_descriptors]
     end
     private_class_method :mutation_process_context
 
