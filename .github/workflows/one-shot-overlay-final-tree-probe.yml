@@ -1,0 +1,57 @@
+name: Probe final overlay tree against upstream main
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-rebase-v2-20260913
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 011ccfad6cae49f30237af00e8506cf39dacb272
+
+jobs:
+  probe:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge the validated final overlay tree onto upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.hooksPath /dev/null
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          upstream="$(git rev-parse refs/remotes/upstream/main)"
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+          git checkout --detach "${upstream}"
+
+          if ! git merge --squash --no-commit "${SOURCE_SHA}"; then
+            echo "::error::Final overlay tree has semantic conflicts with upstream main."
+            git status --short
+            printf '%s\n' '--- conflict paths ---'
+            git diff --name-only --diff-filter=U
+            while IFS= read -r conflict; do
+              [[ -n "${conflict}" ]] || continue
+              echo "::group::Conflict: ${conflict}"
+              git diff --cc -- "${conflict}" || true
+              echo "::endgroup::"
+            done < <(git diff --name-only --diff-filter=U)
+            exit 1
+          fi
+
+          echo "Final tree merged without conflicts."
+          git diff --stat --cached
