@@ -128,17 +128,19 @@ jobs:
           replace_exact_lines(
               "Library/Homebrew/test/support/overlay_cellar_integrity_test.sh",
               [
-                  "for unsafe_cellar in " + BACKSLASH,
-                  "  '../escape' " + BACKSLASH,
-                  '  "${root}/absolute-cellar"',
+                  "for path in " + BACKSLASH,
+                  '  "${stale_rack}/user/Cellar/foo" ' + BACKSLASH,
+                  '  "${stale_rack}/user/opt/foo" ' + BACKSLASH,
+                  '  "${stale_rack}/user/var/homebrew/linked/foo"',
                   "do",
               ],
               [
-                  "unsafe_cellars=(",
-                  "  '../escape'",
-                  '  "${root}/absolute-cellar"',
+                  "stale_paths=(",
+                  '  "${stale_rack}/user/Cellar/foo"',
+                  '  "${stale_rack}/user/opt/foo"',
+                  '  "${stale_rack}/user/var/homebrew/linked/foo"',
                   ")",
-                  'for unsafe_cellar in "${unsafe_cellars[@]}"',
+                  'for path in "${stale_paths[@]}"',
                   "do",
               ],
           )
