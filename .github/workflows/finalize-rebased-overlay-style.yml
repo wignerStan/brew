@@ -88,24 +88,52 @@ jobs:
 
           def normalize_python_heredoc_command(path: str) -> None:
               lines = read_lines(path)
-              start_line = "python3 - " + BACKSLASH
-              starts = [index for index, line in enumerate(lines) if line == start_line]
+              continued_launchers = {
+                  "python3 - " + BACKSLASH: True,
+                  "python3 " + BACKSLASH: False,
+              }
+              starts = [
+                  index
+                  for index, line in enumerate(lines)
+                  if line in continued_launchers
+              ]
+              if not starts:
+                  normalized = [
+                      index
+                      for index, line in enumerate(lines)
+                      if line.startswith("python3 - ") and " <<" in line
+                  ]
+                  if len(normalized) == 1:
+                      return
+                  raise SystemExit(
+                      f"{path}: expected one continued or normalized Python heredoc launcher, "
+                      f"found continued=0 normalized={len(normalized)}"
+                  )
               if len(starts) != 1:
                   raise SystemExit(
                       f"{path}: expected exactly one continued Python heredoc launcher, found {len(starts)}"
                   )
 
               start = starts[0]
+              dash_on_launcher = continued_launchers[lines[start]]
               arguments: list[str] = []
               marker = ""
               end = start + 1
               while end < len(lines):
                   line = lines[end].strip()
+                  if not arguments and not dash_on_launcher:
+                      if not line.startswith("- "):
+                          raise SystemExit(
+                              f"{path}: split Python launcher is missing its '-' argument"
+                          )
+                      line = line[2:]
+
                   if " <<" in line:
                       argument, marker_suffix = line.split(" <<", 1)
                       arguments.append(argument)
                       marker = "<<" + marker_suffix
                       break
+
                   continuation = " " + BACKSLASH
                   if not line.endswith(continuation):
                       raise SystemExit(
