@@ -88,7 +88,7 @@ jobs:
               lines[matches[0]] = new
               write_lines(path, lines)
 
-          def externalize_python_validator(path: str) -> Path:
+          def externalize_python_validators(path: str) -> list[Path]:
               shell_path = Path(path)
               lines = read_lines(path)
               openers = [
@@ -96,53 +96,67 @@ jobs:
                   for index, line in enumerate(lines)
                   if PYTHON_HEREDOC.search(line)
               ]
-              if len(openers) != 1:
-                  raise SystemExit(
-                      f"{path}: expected exactly one Python heredoc opener, found {len(openers)}"
-                  )
-
-              opener = openers[0]
-              terminators = [
-                  index
-                  for index in range(opener + 1, len(lines))
-                  if lines[index] == "PY"
-              ]
-              if len(terminators) != 1:
-                  raise SystemExit(
-                      f"{path}: expected exactly one Python heredoc terminator, found {len(terminators)}"
-                  )
-
-              terminator = terminators[0]
-              body = lines[opener + 1:terminator]
-              if not body:
-                  raise SystemExit(f"{path}: Python validator body is empty")
+              if not openers:
+                  raise SystemExit(f"{path}: expected at least one Python heredoc opener")
 
               stem = shell_path.stem
               if not stem.endswith("_test"):
                   raise SystemExit(f"{path}: expected a *_test.sh filename")
-              validator_path = shell_path.with_name(
-                  f"{stem.removesuffix('_test')}_validator.py"
-              )
-              if validator_path.exists():
-                  raise SystemExit(f"{validator_path}: refusing to overwrite an existing file")
+              validator_stem = stem.removesuffix("_test")
 
-              validator_path.write_text("\n".join(body) + "\n", encoding="utf-8")
-              compile(
-                  validator_path.read_text(encoding="utf-8"),
-                  str(validator_path),
-                  "exec",
-              )
+              rewritten: list[str] = []
+              validator_paths: list[Path] = []
+              cursor = 0
+              for ordinal, opener in enumerate(openers, start=1):
+                  if opener < cursor:
+                      raise SystemExit(f"{path}: overlapping Python heredoc blocks")
+                  next_opener = openers[ordinal] if ordinal < len(openers) else len(lines)
+                  terminators = [
+                      index
+                      for index in range(opener + 1, next_opener)
+                      if lines[index] == "PY"
+                  ]
+                  if len(terminators) != 1:
+                      raise SystemExit(
+                          f"{path}: block {ordinal} expected one terminator, found {len(terminators)}"
+                      )
 
-              redirection = '< "${BASH_SOURCE[0]%_test.sh}_validator.py"'
-              launcher = PYTHON_HEREDOC.sub(redirection, lines[opener])
-              rewritten = lines[:opener] + [launcher] + lines[terminator + 1:]
+                  terminator = terminators[0]
+                  body = lines[opener + 1:terminator]
+                  if not body:
+                      raise SystemExit(f"{path}: Python validator block {ordinal} is empty")
+
+                  suffix = f"_{ordinal}" if len(openers) > 1 else ""
+                  validator_path = shell_path.with_name(
+                      f"{validator_stem}_validator{suffix}.py"
+                  )
+                  if validator_path.exists():
+                      raise SystemExit(
+                          f"{validator_path}: refusing to overwrite an existing file"
+                      )
+                  validator_path.write_text("\n".join(body) + "\n", encoding="utf-8")
+                  compile(
+                      validator_path.read_text(encoding="utf-8"),
+                      str(validator_path),
+                      "exec",
+                  )
+
+                  redirection = '< "${BASH_SOURCE[0]%_test.sh}_validator'
+                  redirection += suffix + '.py"'
+                  launcher = PYTHON_HEREDOC.sub(redirection, lines[opener])
+                  rewritten.extend(lines[cursor:opener])
+                  rewritten.append(launcher)
+                  cursor = terminator + 1
+                  validator_paths.append(validator_path)
+
+              rewritten.extend(lines[cursor:])
               write_lines(path, rewritten)
 
               if any(PYTHON_HEREDOC.search(line) for line in rewritten):
                   raise SystemExit(f"{path}: Python heredoc opener remains after extraction")
-              if "PY" in rewritten:
+              if any(line == "PY" for line in rewritten):
                   raise SystemExit(f"{path}: Python heredoc terminator remains after extraction")
-              return validator_path
+              return validator_paths
 
           workflow = ".github/workflows/rebase-upstream-overlay.yml"
           replace_exact_lines(
@@ -191,15 +205,18 @@ jobs:
               ],
           )
 
-          validator_paths = [
-              externalize_python_validator(path)
-              for path in [
-                  "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
-                  "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
-                  "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
-                  "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
-              ]
-          ]
+          validator_paths = []
+          for path in [
+              "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
+              "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+              "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
+              "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
+          ]:
+              validator_paths.extend(externalize_python_validators(path))
+          if len(validator_paths) != 5:
+              raise SystemExit(
+                  f"expected five extracted validators, found {len(validator_paths)}"
+              )
           print("Externalized validators:")
           for validator_path in validator_paths:
               print(f"  {validator_path}")
@@ -220,7 +237,8 @@ jobs:
             Library/Homebrew/test/support/overlay_commit_boundary_validator.py
             Library/Homebrew/test/support/overlay_rebase_workflow_validator.py
             Library/Homebrew/test/support/overlay_removal_partition_validator.py
-            Library/Homebrew/test/support/overlay_transaction_publication_durability_validator.py
+            Library/Homebrew/test/support/overlay_transaction_publication_durability_validator_1.py
+            Library/Homebrew/test/support/overlay_transaction_publication_durability_validator_2.py
           )
           for validator_file in "${validator_files[@]}"; do
             test -s "${validator_file}"
