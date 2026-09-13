@@ -1069,7 +1069,8 @@ module Homebrew
           local_kegs_by_full_name[formula.full_name] = local_kegs if local_kegs.any?
         end
         preferred_local_kegs = local_kegs_by_full_name.transform_values do |kegs|
-          T.must(kegs.max_by(&:scheme_and_version))
+          kegs.max_by(&:scheme_and_version) ||
+            raise("overlay autoremove received an empty local keg set")
         end
         removable_formulae = Utils::Autoremove.removable_formulae(
           formulae,

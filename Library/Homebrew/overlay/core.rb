@@ -780,6 +780,10 @@ module Homebrew
           description: "overlay reinstall state",
           max_bytes:   32,
         )
+        if state.nil?
+          raise TransactionFailure, "invalid overlay reinstall metadata: #{@root}"
+        end
+
         valid_metadata = formula == "#{formula_name}\n" && recorded_version == "#{version}\n" &&
                          ["prepared\n", "backed-up\n", "committed\n"].include?(state)
         raise TransactionFailure, "invalid overlay reinstall metadata: #{@root}" unless valid_metadata
@@ -787,7 +791,7 @@ module Homebrew
         safe_backup = backup_version.directory? && !backup_version.symlink? && backup_version.stat.uid == Process.uid
         raise TransactionFailure, "overlay reinstall backup is unavailable: #{backup_version}" unless safe_backup
 
-        T.must(state).chomp
+        state.chomp
       end
 
       sig { void }
@@ -1874,8 +1878,10 @@ module Homebrew
         raise TransactionFailure, "invalid overlay view state: #{state}" unless valid_fields
 
         fields.each_slice(2) do |relative, target|
-          relative = T.must(relative)
-          target = T.must(target)
+          if relative.nil? || target.nil?
+            raise TransactionFailure, "invalid overlay view state: #{state}"
+          end
+
           expected = expected_link_target(relative)
           if expected.nil? || target != expected || entries.key?(relative)
             raise TransactionFailure, "invalid overlay view state: #{state}"
@@ -1917,8 +1923,10 @@ module Homebrew
 
       components = resolved.relative_path_from(cellar).each_filename.to_a
       return unless components.length.between?(1, 2)
-      return unless valid_formula_name?(T.must(components.first))
-      return if components.length == 2 && !valid_version_name?(T.must(components.last))
+
+      formula = components.fetch(0)
+      return unless valid_formula_name?(formula)
+      return if components.length == 2 && !valid_version_name?(components.fetch(1))
 
       resolved
     rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, ArgumentError
@@ -2060,8 +2068,8 @@ module Homebrew
 
     sig { void }
     def self.clear_caches!
-      T.unsafe(::Formula).clear_cache if defined?(::Formula)
-      T.unsafe(::Keg).clear_cache if defined?(::Keg)
+      ::Formula.clear_cache if defined?(::Formula)
+      ::Keg.clear_cache if defined?(::Keg)
       @link_state_entries = nil
     end
   end

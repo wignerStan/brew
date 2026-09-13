@@ -548,7 +548,8 @@ module Homebrew
                       HOMEBREW_PREFIX.stat.uid == Process.uid && HOMEBREW_PREFIX.writable?
         cellar_safe = user_cellar.directory? && !user_cellar.symlink? &&
                       user_cellar.stat.uid == Process.uid && user_cellar.writable?
-        unless prefix_safe && cellar_safe
+        user_prefix_safe = prefix_safe && cellar_safe
+        unless user_prefix_safe
           findings << Finding.new(
             <<~EOS,
               The user Homebrew overlay is not a real, user-owned writable prefix:
@@ -568,7 +569,8 @@ module Homebrew
                 #{transactions}
             EOS
             tier:        :unsupported,
-            remediation: "Run any brew command to invoke recovery, then inspect the transaction journals if it fails.",
+            remediation: "Run any brew command to invoke recovery, then inspect the " \
+                         "transaction journals if it fails.",
           )
         end
 

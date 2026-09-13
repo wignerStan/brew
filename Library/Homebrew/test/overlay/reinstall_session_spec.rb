@@ -15,6 +15,11 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
     )
   end
 
+  def build_session(link_keg:, verbose:)
+    described_class.build(keg, link_keg:, verbose:) ||
+      raise("expected an overlay reinstall session")
+  end
+
   it "does not intercept native or empty reinstall targets" do
     allow(Homebrew::Overlay).to receive(:active?).and_return(false)
 
@@ -26,7 +31,7 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
 
   it "restores the inherited view after an inherited reinstall failure" do
     allow(Homebrew::Overlay).to receive(:inherited_keg?).and_return(true)
-    session = T.must(described_class.build(keg, link_keg: true, verbose: true))
+    session = build_session(link_keg: true, verbose: true)
 
     expect(keg).to receive(:unlink)
     session.prepare!
@@ -37,7 +42,7 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
 
   it "discards a private backup after a successful reinstall" do
     backup = instance_double(Homebrew::Overlay::ReinstallBackup)
-    session = T.must(described_class.build(keg, link_keg: true, verbose: true))
+    session = build_session(link_keg: true, verbose: true)
 
     allow(Homebrew::Overlay).to receive(:mutation_active?).and_return(false, true)
     expect(Homebrew::Overlay).to receive(:begin_mutation!)
@@ -53,7 +58,7 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
 
   it "restores an uncommitted private backup and relinks it" do
     backup = instance_double(Homebrew::Overlay::ReinstallBackup)
-    session = T.must(described_class.build(keg, link_keg: true, verbose: true))
+    session = build_session(link_keg: true, verbose: true)
 
     allow(Homebrew::Overlay).to receive(:mutation_active?).and_return(false)
     allow(Homebrew::Overlay).to receive(:begin_mutation!)
@@ -70,7 +75,7 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
 
   it "keeps a committed private replacement after a later native failure" do
     backup = instance_double(Homebrew::Overlay::ReinstallBackup)
-    session = T.must(described_class.build(keg, link_keg: true, verbose: false))
+    session = build_session(link_keg: true, verbose: false)
 
     allow(Homebrew::Overlay).to receive(:mutation_active?).and_return(false, true)
     allow(Homebrew::Overlay).to receive(:begin_mutation!)
@@ -87,7 +92,7 @@ RSpec.describe Homebrew::Overlay::ReinstallSession do
 
   it "finishes a mutation when private backup preparation fails" do
     backup = instance_double(Homebrew::Overlay::ReinstallBackup)
-    session = T.must(described_class.build(keg, link_keg: false, verbose: false))
+    session = build_session(link_keg: false, verbose: false)
 
     allow(Homebrew::Overlay).to receive(:mutation_active?).and_return(false, true)
     expect(Homebrew::Overlay).to receive(:begin_mutation!)

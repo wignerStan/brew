@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
-# shellcheck source=../../utils/overlay.sh
+# shellcheck source=Homebrew/utils/overlay.sh
 source "${repo}/Library/Homebrew/utils/overlay.sh"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/homebrew-overlay-cellar-integrity.XXXXXX")"

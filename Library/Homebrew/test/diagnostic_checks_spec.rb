@@ -257,8 +257,13 @@ RSpec.describe Homebrew::Diagnostic::Checks do
   end
 
   specify "#check_overlay_configuration reports an unavailable administrator base" do
-    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: Pathname("/missing/base"),
-                                                 base_cellar: Pathname("/missing/base/Cellar"), transactions_dir: HOMEBREW_PREFIX/"var/homebrew/overlay/transactions", link_state_file: HOMEBREW_PREFIX/"var/homebrew/overlay/view.state")
+    allow(Homebrew::Overlay).to receive_messages(
+      active?:          true,
+      base_prefix:      Pathname("/missing/base"),
+      base_cellar:      Pathname("/missing/base/Cellar"),
+      transactions_dir: HOMEBREW_PREFIX/"var/homebrew/overlay/transactions",
+      link_state_file:  HOMEBREW_PREFIX/"var/homebrew/overlay/view.state",
+    )
 
     findings = Array(checks.check_overlay_configuration)
     expect(findings.join("\n")).to include("administrator Homebrew base is unavailable")
@@ -270,8 +275,14 @@ RSpec.describe Homebrew::Diagnostic::Checks do
     base_cellar.mkpath
     stale_keg = HOMEBREW_CELLAR/"foo/1.0"
 
-    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: base, base_cellar: base_cellar,
-                                                 transactions_dir: HOMEBREW_PREFIX/"var/homebrew/overlay/transactions", link_state_file: HOMEBREW_PREFIX/"var/homebrew/overlay/view.state", base_generation_drift: [stale_keg])
+    allow(Homebrew::Overlay).to receive_messages(
+      active?:               true,
+      base_prefix:           base,
+      base_cellar:           base_cellar,
+      transactions_dir:      HOMEBREW_PREFIX/"var/homebrew/overlay/transactions",
+      link_state_file:       HOMEBREW_PREFIX/"var/homebrew/overlay/view.state",
+      base_generation_drift: [stale_keg],
+    )
 
     findings = Array(checks.check_overlay_configuration)
     message = findings.join("\n")
