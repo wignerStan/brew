@@ -1,0 +1,251 @@
+name: Harden overlay Sorbet contracts v13
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-sorbet-hardening-v13-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refactor-overlay-sorbet-hardening-v13
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: 965d2b52620e7ee81a8e93141102d70342d9863d
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  RESULT_BRANCH: refactor/overlay-sorbet-hardening-v13-20260913
+
+jobs:
+  harden:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact style-clean candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
+
+      - name: Encode typed subprocess and formula DSL contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"{path}: expected {expected} replacement(s), found {count}: {old!r}"
+                  )
+              file_path.write_text(text.replace(old, new), encoding="utf-8")
+
+          core = "Library/Homebrew/overlay/core.rb"
+          replace_exact(
+              core,
+              'require "securerandom"\nrequire "utils/path"\n',
+              'require "securerandom"\nrequire "system_command"\nrequire "utils/path"\n',
+          )
+          replace_exact(
+              core,
+              '        Homebrew.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s\n',
+              '        SystemCommand.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s\n',
+          )
+          replace_exact(
+              core,
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, options = mutation_process_context
+      Homebrew.safe_system environment, "/bin/bash", script,
+                           "--mark-generation-dirty", HOMEBREW_PREFIX.to_s, **options
+''',
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, file_descriptors = mutation_process_context
+      run_overlay_command!(
+        environment,
+        "/bin/bash",
+        script,
+        "--mark-generation-dirty",
+        HOMEBREW_PREFIX.to_s,
+        file_descriptors:,
+      )
+''',
+          )
+          replace_exact(
+              core,
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, options = mutation_process_context(finalize: true)
+      Homebrew.safe_system environment, "/bin/bash", script,
+                           "--bump-generation", HOMEBREW_PREFIX.to_s, **options
+''',
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, file_descriptors = mutation_process_context(finalize: true)
+      run_overlay_command!(
+        environment,
+        "/bin/bash",
+        script,
+        "--bump-generation",
+        HOMEBREW_PREFIX.to_s,
+        file_descriptors:,
+      )
+''',
+          )
+          replace_exact(
+              core,
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, options = mutation_process_context(finalize: mutation, owner_transaction:)
+      Homebrew.safe_system environment, "/bin/bash", script, "--sync", **options
+''',
+              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
+      environment, file_descriptors = mutation_process_context(finalize: mutation, owner_transaction:)
+      run_overlay_command!(environment, "/bin/bash", script, "--sync", file_descriptors:)
+''',
+          )
+
+          context_anchor = '''    sig {
+      params(
+        finalize:          T::Boolean,
+        owner_transaction: T.nilable(FormulaTransaction),
+      ).returns([T::Hash[String, T.nilable(String)], T::Hash[T.untyped, T.untyped]])
+    }
+    def self.mutation_process_context(finalize: false, owner_transaction: nil)
+      environment = T.let({}, T::Hash[String, T.nilable(String)])
+      options = T.let({}, T::Hash[T.untyped, T.untyped])
+'''
+          helper = '''    sig {
+      params(
+        environment:      T::Hash[String, String],
+        executable:       T.any(String, Pathname),
+        arguments:        T.any(String, Pathname),
+        file_descriptors: T::Hash[Integer, File],
+      ).void
+    }
+    def self.run_overlay_command!(environment, executable, *arguments, file_descriptors:)
+      command = [executable, *arguments]
+      pid = Process.spawn(
+        environment,
+        executable.to_s,
+        *arguments.map(&:to_s),
+        file_descriptors,
+      )
+      _, status = Process.wait2(pid)
+      return if status.success?
+
+      failure = status.signaled? ? "signal #{status.termsig}" : "status #{status.exitstatus}"
+      raise TransactionFailure, "overlay helper command failed with #{failure}: #{command.join(" ")}"
+    rescue SystemCallError => e
+      raise TransactionFailure, "overlay helper command failed: #{e.message}"
+    end
+    private_class_method :run_overlay_command!
+
+    sig {
+      params(
+        finalize:          T::Boolean,
+        owner_transaction: T.nilable(FormulaTransaction),
+      ).returns([T::Hash[String, String], T::Hash[Integer, File]])
+    }
+    def self.mutation_process_context(finalize: false, owner_transaction: nil)
+      environment = T.let({}, T::Hash[String, String])
+      file_descriptors = T.let({}, T::Hash[Integer, File])
+'''
+          replace_exact(core, context_anchor, helper)
+          replace_exact(
+              core,
+              "        options[MUTATION_LOCK_DESCRIPTOR] = mutation_lock\n",
+              "        file_descriptors[MUTATION_LOCK_DESCRIPTOR] = mutation_lock\n",
+          )
+          replace_exact(
+              core,
+              "        options[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock\n",
+              "        file_descriptors[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock\n",
+          )
+          replace_exact(
+              core,
+              "      [environment, options]\n",
+              "      [environment, file_descriptors]\n",
+          )
+
+          spec = "Library/Homebrew/test/installed_dependents_spec.rb"
+          replace_exact(
+              spec,
+              '''      dependent = setup_test_keg("bar", "1.0") do
+        depends_on "foo"
+      end
+''',
+              '''      dependent = setup_test_keg("bar", "1.0") do
+        T.bind(self, T.class_of(Formula))
+        depends_on "foo"
+      end
+''',
+          )
+          PY
+
+          bin/brew style --fix --display-cop-names \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/test/installed_dependents_spec.rb
+          git diff --check
+          ruby -c Library/Homebrew/overlay/core.rb >/dev/null
+          ruby -c Library/Homebrew/test/installed_dependents_spec.rb >/dev/null
+
+      - name: Run Sorbet before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Commit and publish typed hardening
+        id: result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add -- \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/test/installed_dependents_spec.rb
+          if git diff --cached --quiet; then
+            echo "Sorbet hardening produced no tracked changes." >&2
+            exit 1
+          fi
+          git commit -m "Harden overlay subprocess typing"
+          after="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${RESULT_BRANCH}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing result branch ${RESULT_BRANCH}." >&2
+            exit 1
+          fi
+          git push origin "${after}:refs/heads/${RESULT_BRANCH}"
+
+      - name: Report result identity
+        if: always()
+        shell: bash
+        env:
+          AFTER: ${{ steps.result.outputs.after }}
+        run: |
+          printf 'Typed candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Result branch: %s\n' "${RESULT_BRANCH}"
