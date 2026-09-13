@@ -1787,7 +1787,7 @@ module Homebrew
       keg_stat = keg.lstat
       remove_tree_durable!(keg, expected_device: keg_stat.dev, expected_inode: keg_stat.ino)
 
-      rack.rmdir_if_possible
+      Utils::Path.rmdir_if_possible(rack)
       clear_caches!
       sync!(mutation: true)
       true

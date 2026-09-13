@@ -369,7 +369,7 @@ class Keg
     remove_old_aliases
     remove_oldname_opt_records
     FileUtils.rm_r(path)
-    path.parent.rmdir_if_possible
+    Utils::Path.rmdir_if_possible(path.parent)
     if Homebrew::Overlay.active? && path.parent.expand_path == (HOMEBREW_CELLAR/name).expand_path
       Homebrew::Overlay.restore_inherited_rack!(name)
     end

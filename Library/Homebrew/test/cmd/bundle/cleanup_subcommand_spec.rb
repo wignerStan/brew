@@ -555,7 +555,7 @@ RSpec.describe Homebrew::Cmd::Bundle::CleanupSubcommand do
     it "cleans up without suggesting --force when it prompts" do
       allow(Homebrew::Ask).to receive(:confirm?).with(action: "cleanup").and_return(true)
       allow(Homebrew::Bundle).to receive(:mark_as_installed_on_request!)
-      allow(Kernel).to receive(:system)
+      allow(Kernel).to receive(:system).and_return(true)
       allow(described_class).to receive(:system_output_no_stderr).and_return("")
       allow(Formatter).to receive(:columns).with(%w[a b]).and_return("a b")
       expect(Kernel).to receive(:system).with(HOMEBREW_BREW_FILE, "uninstall", "--cask", "--force", "a", "b")

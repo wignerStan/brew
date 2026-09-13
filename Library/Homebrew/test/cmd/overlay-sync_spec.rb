@@ -14,7 +14,7 @@ RSpec.describe Homebrew::Cmd::OverlaySync do
     described_class.new([]).run
   end
 
-  it "rejects use outside an active overlay" do
+  it "rejects use outside an active overlay", :integration_test do
     allow(Homebrew::Overlay).to receive(:active?).and_return(false)
     expect(Homebrew::Overlay).not_to receive(:sync!)
 

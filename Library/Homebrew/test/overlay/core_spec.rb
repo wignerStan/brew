@@ -631,18 +631,20 @@ RSpec.describe Homebrew::Overlay do
     script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
     descriptor = Homebrew::Overlay::MUTATION_LOCK_DESCRIPTOR
 
-    expect(Homebrew).to receive(:safe_system).ordered do |environment, command, path, action, argument, **options|
+    expect(described_class).to receive(:run_overlay_command!).ordered do |environment, command, path,
+                                                                         action, argument, file_descriptors:|
       expect(environment).to include("HOMEBREW_OVERLAY_MUTATION_LOCK_FD" => descriptor.to_s)
       expect([command, path, action, argument]).to eq(["/bin/bash", script, "--mark-generation-dirty", prefix.to_s])
-      expect(options.fetch(descriptor)).to be_a(File)
+      expect(file_descriptors.fetch(descriptor)).to be_a(File)
     end
-    expect(Homebrew).to receive(:safe_system).ordered do |environment, command, path, action, argument, **options|
+    expect(described_class).to receive(:run_overlay_command!).ordered do |environment, command, path,
+                                                                         action, argument, file_descriptors:|
       expect(environment).to include(
         "HOMEBREW_OVERLAY_MUTATION_LOCK_FD"  => descriptor.to_s,
         "HOMEBREW_OVERLAY_FINALIZE_MUTATION" => "1",
       )
       expect([command, path, action, argument]).to eq(["/bin/bash", script, "--bump-generation", prefix.to_s])
-      expect(options.fetch(descriptor)).to be_a(File)
+      expect(file_descriptors.fetch(descriptor)).to be_a(File)
     end
 
     described_class.begin_mutation!
