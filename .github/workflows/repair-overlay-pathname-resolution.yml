@@ -68,7 +68,8 @@ jobs:
               "Library/Homebrew/test/support/overlay_architecture_test.sh",
               "        reinstall_adapter=\"${repo}/Library/Homebrew/reinstall/reinstall.rb\"\n\n",
               "        reinstall_adapter=\"${repo}/Library/Homebrew/reinstall/reinstall.rb\"\n\n"
-              "        if grep -R -n -F '.resolved_path' \"${ruby_impl}\"\n"
+              "        if grep -R -n -F '.resolved_path' \"${ruby_impl}\" |\n"
+              "           grep -v -F 'Utils::Path.resolved_path'\n"
               "        then\n"
               "          echo \"Error: overlay implementation uses deprecated Pathname#resolved_path\" >&2\n"
               "          exit 1\n"
@@ -76,7 +77,12 @@ jobs:
           )
           PY
 
-          test -z "$(grep -R -n -F '.resolved_path' Library/Homebrew/overlay || true)"
+          if grep -R -n -F '.resolved_path' Library/Homebrew/overlay |
+             grep -v -F 'Utils::Path.resolved_path'
+          then
+            echo "Error: overlay implementation still uses deprecated Pathname#resolved_path" >&2
+            exit 1
+          fi
           git diff --check
           ruby -c Library/Homebrew/overlay/core.rb >/dev/null
           bash -n Library/Homebrew/test/support/overlay_architecture_test.sh
