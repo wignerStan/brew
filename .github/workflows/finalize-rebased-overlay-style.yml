@@ -46,7 +46,7 @@ jobs:
           test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
           test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
 
-      - name: Repair workflow ShellCheck findings and all changed shell formatting
+      - name: Normalize shell structures and format the complete changed shell delta
         id: repair
         shell: bash
         run: |
@@ -54,34 +54,132 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/rebase-upstream-overlay.yml")
-          text = path.read_text(encoding="utf-8")
-          replacements = [
-              (
-                  "          printf 'sha=%s\\n' \"${AFTER}\" >>\"${GITHUB_OUTPUT}\"\n"
-                  "          printf 'tree=%s\\n' \"${EXPECTED_TREE}\" >>\"${GITHUB_OUTPUT}\"\n"
-                  "          printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\" >>\"${GITHUB_OUTPUT}\"\n",
-                  "          {\n"
-                  "            printf 'sha=%s\\n' \"${AFTER}\"\n"
-                  "            printf 'tree=%s\\n' \"${EXPECTED_TREE}\"\n"
-                  "            printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\"\n"
-                  "          } >>\"${GITHUB_OUTPUT}\"\n",
-              ),
-              (
-                  "            https://github.com/${GITHUB_REPOSITORY}.git\n",
-                  "            \"https://github.com/${GITHUB_REPOSITORY}.git\"\n",
-              ),
-              (
-                  "--force-with-lease=refs/heads/overlay-store:${BEFORE}",
-                  "\"--force-with-lease=refs/heads/overlay-store:${BEFORE}\"",
-              ),
-          ]
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one workflow replacement, found {count}: {old!r}")
-              text = text.replace(old, new, 1)
-          path.write_text(text, encoding="utf-8")
+          BACKSLASH = chr(92)
+
+          def read_lines(path: str) -> list[str]:
+              return Path(path).read_text(encoding="utf-8").splitlines()
+
+          def write_lines(path: str, lines: list[str]) -> None:
+              Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          def replace_exact_lines(path: str, old: list[str], new: list[str]) -> None:
+              lines = read_lines(path)
+              matches = [
+                  index
+                  for index in range(len(lines) - len(old) + 1)
+                  if lines[index:index + len(old)] == old
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"{path}: expected exactly one structural match, found {len(matches)}: {old!r}"
+                  )
+              start = matches[0]
+              write_lines(path, lines[:start] + new + lines[start + len(old):])
+
+          def replace_unique_line(path: str, old: str, new: str) -> None:
+              lines = read_lines(path)
+              matches = [index for index, line in enumerate(lines) if line == old]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"{path}: expected exactly one line match, found {len(matches)}: {old!r}"
+                  )
+              lines[matches[0]] = new
+              write_lines(path, lines)
+
+          def replace_python_heredoc_command(path: str, arguments: list[str]) -> None:
+              old = ["python3 - " + BACKSLASH]
+              old.extend(f"  {argument} {BACKSLASH}" for argument in arguments[:-1])
+              old.append(f"  {arguments[-1]} <<'PY'")
+              new = ["python_sources=("]
+              new.extend(f"  {argument}" for argument in arguments)
+              new.extend([
+                  ")",
+                  "python3 - \"${python_sources[@]}\" <<'PY'",
+              ])
+              replace_exact_lines(path, old, new)
+
+          workflow = ".github/workflows/rebase-upstream-overlay.yml"
+          replace_exact_lines(
+              workflow,
+              [
+                  "          printf 'sha=%s\\n' \"${AFTER}\" >>\"${GITHUB_OUTPUT}\"",
+                  "          printf 'tree=%s\\n' \"${EXPECTED_TREE}\" >>\"${GITHUB_OUTPUT}\"",
+                  "          printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\" >>\"${GITHUB_OUTPUT}\"",
+              ],
+              [
+                  "          {",
+                  "            printf 'sha=%s\\n' \"${AFTER}\"",
+                  "            printf 'tree=%s\\n' \"${EXPECTED_TREE}\"",
+                  "            printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\"",
+                  "          } >>\"${GITHUB_OUTPUT}\"",
+              ],
+          )
+          replace_unique_line(
+              workflow,
+              "            https://github.com/${GITHUB_REPOSITORY}.git",
+              "            \"https://github.com/${GITHUB_REPOSITORY}.git\"",
+          )
+          replace_unique_line(
+              workflow,
+              "              --force-with-lease=refs/heads/overlay-store:${BEFORE} " + BACKSLASH,
+              "              \"--force-with-lease=refs/heads/overlay-store:${BEFORE}\" " + BACKSLASH,
+          )
+
+          replace_exact_lines(
+              "Library/Homebrew/test/support/overlay_cellar_integrity_test.sh",
+              [
+                  "for unsafe_cellar in " + BACKSLASH,
+                  "  '../escape' " + BACKSLASH,
+                  '  "${root}/absolute-cellar"',
+                  "do",
+              ],
+              [
+                  "unsafe_cellars=(",
+                  "  '../escape'",
+                  '  "${root}/absolute-cellar"',
+                  ")",
+                  'for unsafe_cellar in "${unsafe_cellars[@]}"',
+                  "do",
+              ],
+          )
+
+          replace_python_heredoc_command(
+              "Library/Homebrew/test/support/overlay_commit_boundary_test.sh",
+              [
+                  '"${source_file}"',
+                  '"${repo}/Library/Homebrew/install.rb"',
+                  '"${repo}/Library/Homebrew/unpack_strategy.rb"',
+              ],
+          )
+          replace_python_heredoc_command(
+              "Library/Homebrew/test/support/overlay_rebase_workflow_test.sh",
+              [
+                  '"${workflow}"',
+                  '"${repo}/.github/workflows/overlay-validation.yml"',
+                  '"${repo}/Library/Homebrew/test/support/overlay_final_review_reproducer.sh"',
+              ],
+          )
+          replace_python_heredoc_command(
+              "Library/Homebrew/test/support/overlay_removal_partition_test.sh",
+              [
+                  '"${overlay_core}"',
+                  '"${cleanup_source}"',
+                  '"${autoremove_source}"',
+                  '"${uninstall_source}"',
+                  '"${reinstall_source}"',
+                  '"${upgrade_source}"',
+                  '"${link_source}"',
+                  '"${unlink_source}"',
+              ],
+          )
+          replace_python_heredoc_command(
+              "Library/Homebrew/test/support/overlay_transaction_publication_durability_test.sh",
+              [
+                  '"${core}"',
+                  '"${install_session}"',
+                  '"${finalizer}"',
+              ],
+          )
           PY
 
           mapfile -d '' shell_files < <(
@@ -89,13 +187,17 @@ jobs:
               upstream/main...HEAD -- '*.sh'
           )
           test "${#shell_files[@]}" -gt 0
+
+          set +e
           bin/brew style --fix --display-cop-names "${shell_files[@]}"
+          style_status=$?
+          set -e
+          printf 'Homebrew shell style autofix exit status: %s\n' "${style_status}"
 
           for shell_file in "${shell_files[@]}"; do
             bash -n "${shell_file}"
           done
           git diff --check
-          printf 'shell_file=%s\n' "${shell_files[@]}"
           printf 'shell_count=%s\n' "${#shell_files[@]}" >>"${GITHUB_OUTPUT}"
 
       - name: Commit the final style repair
