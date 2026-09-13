@@ -4,17 +4,20 @@ import sys
 ruby = Path(sys.argv[1]).read_text(encoding="utf-8")
 shell = Path(sys.argv[2]).read_text(encoding="utf-8")
 
+
 def body(source: str, start_fragment: str, end_fragment: str) -> str:
     start = source.index(start_fragment)
     end = source.index(end_fragment, start)
     return source[start:end]
+
 
 def ordered(section: str, fragments: list[str], description: str) -> None:
     positions = [section.index(fragment) for fragment in fragments]
     if positions != sorted(positions) or len(set(positions)) != len(positions):
         raise SystemExit(f"{description} is out of order: {list(zip(fragments, positions))}")
 
-prepare = body(ruby, "      def prepare_replacement_rack!\n", "\n      # Formulae built from source",)
+
+prepare = body(ruby, "      def prepare_replacement_rack!\n", "\n      # Formulae built from source")
 ordered(prepare, [
     "File.rename(staging_version, replacement_rack/version)",
     "Overlay.durable_atomic_write!(marker, \"#{id}\\n\", mode: 0600)",
@@ -25,7 +28,7 @@ ordered(prepare, [
     "Overlay.fsync_directory!(@replacement_root.parent.parent)",
 ], "replacement-rack durability")
 
-commit = body(ruby, "      def commit!\n", "\n      sig { void }\n      def rollback!",)
+commit = body(ruby, "      def commit!\n", "\n      sig { void }\n      def rollback!")
 ordered(commit, [
     "Overlay.fsync_tree!(final_version)",
     "Overlay.record_base_generation!(final_version, base_generation)",
@@ -34,10 +37,10 @@ ordered(commit, [
     "write_state(\"committed\")",
 ], "commit-marker durability")
 
-exchange = body(ruby, "    def self.atomic_exchange!(left, right)\n", "\n    # Remove a newly created",)
+exchange = body(ruby, "    def self.atomic_exchange!(left, right)\n", "\n    # Remove a newly created")
 ordered(exchange, [
     "mv = %w[/bin/mv /usr/bin/mv].find",
-    "Homebrew.safe_system mv, \"--exchange\", \"--no-target-directory\"",
+    "SystemCommand.safe_system mv, \"--exchange\", \"--no-target-directory\"",
     "[left.parent, right.parent].uniq.each { |parent| fsync_directory!(parent) }",
 ], "rack-exchange durability")
 
@@ -80,7 +83,7 @@ for fragment in required_cleanup:
     if fragment not in cleanup:
         raise SystemExit(f"missing durable transaction cleanup: {fragment}")
 
-recovery = body(shell, "homebrew-overlay-recover-formula-transactions() {\n", "\nhomebrew-overlay-sync-unlocked() {",)
+recovery = body(shell, "homebrew-overlay-recover-formula-transactions() {\n", "\nhomebrew-overlay-sync-unlocked() {")
 for forbidden in ("mv -T --", 'rm -f -- "${final_marker}"'):
     if forbidden in recovery:
         raise SystemExit(f"non-durable recovery operation remains: {forbidden}")
