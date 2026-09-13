@@ -3,6 +3,7 @@
 
 require "abstract_command"
 require "unlink"
+require "overlay"
 
 module Homebrew
   module Cmd
@@ -29,8 +30,15 @@ module Homebrew
       sig { override.void }
       def run
         options = { dry_run: args.dry_run?, verbose: args.verbose? }
-
         kegs, casks = args.named.to_kegs_to_casks
+        if (keg = kegs.find { |candidate| Homebrew::Overlay.base_formula_available?(candidate.name) })
+          odie <<~EOS
+            `brew unlink #{keg.name}` is unsupported while #{keg.name} has an administrator-base fallback.
+            Unlinking the user realization would immediately expose the base executable through PATH.
+            Uninstall the user realization to fall back intentionally, or ask an administrator to change the base.
+          EOS
+        end
+
         kegs.each do |keg|
           if args.dry_run?
             puts "Would remove:"

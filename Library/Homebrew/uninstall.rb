@@ -6,6 +6,7 @@ require "utils/text"
 require "dependents_message"
 require "installed_dependents"
 require "utils/output"
+require "overlay"
 
 module Homebrew
   # Helper module for uninstalling kegs.
@@ -22,6 +23,28 @@ module Homebrew
       ).void
     }
     def self.uninstall_kegs(kegs_by_rack, casks: [], force: false, ignore_dependencies: false, named_args: [])
+      inherited_only_kegs = T.let([], T::Array[Keg])
+      if force && Homebrew::Overlay.active?
+        local_kegs_by_rack = T.let({}, T::Hash[Pathname, T::Array[Keg]])
+        kegs_by_rack.each do |rack, kegs|
+          local_kegs = kegs.reject { |keg| Homebrew::Overlay.inherited_keg?(keg.to_path) }
+          if local_kegs.empty?
+            inherited_only_kegs << kegs.fetch(0) if kegs.any?
+          else
+            local_kegs_by_rack[rack] = local_kegs
+          end
+        end
+        kegs_by_rack = local_kegs_by_rack
+      elsif (inherited_keg = kegs_by_rack.values.flatten.find do |keg|
+        Homebrew::Overlay.inherited_keg?(keg.to_path)
+      end)
+        inherited_keg_path = Pathname(inherited_keg.to_path)
+        raise Homebrew::Overlay::InheritedKegError.new(
+          inherited_keg_path,
+          Homebrew::Overlay.base_prefix,
+        )
+      end
+
       handle_unsatisfied_dependents(kegs_by_rack,
                                     casks:,
                                     ignore_dependencies:,
@@ -60,7 +83,7 @@ module Homebrew
               rack = keg.rack
               rm_pin rack
 
-              if rack.directory?
+              if rack.directory? && !Homebrew::Overlay.inherited_rack?(rack)
                 versions = rack.subdirs.map(&:basename)
                 puts <<~EOS
                   #{keg.name} #{Utils::Text.to_sentence(versions)} #{versions.one? ? "is" : "are"} still installed.
@@ -111,7 +134,11 @@ module Homebrew
           end
         end
       end
-    rescue MultipleVersionsInstalledError => e
+
+      inherited_only_kegs.each do |keg|
+        ofail Homebrew::Overlay::InheritedKegError.new(Pathname(keg.to_path), Homebrew::Overlay.base_prefix)
+      end
+    rescue MultipleVersionsInstalledError, Homebrew::Overlay::InheritedKegError => e
       ofail e
     ensure
       # If we delete Cellar/newname, then Cellar/oldname symlink

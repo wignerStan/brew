@@ -6,6 +6,7 @@ require "utils/shell"
 require "abstract_command"
 require "caveats"
 require "unlink"
+require "overlay"
 
 module Homebrew
   module Cmd
@@ -64,6 +65,13 @@ module Homebrew
 
             nil
           end
+        end
+
+        if (inherited_keg = kegs.find { |keg| Homebrew::Overlay.inherited_keg?(keg.to_path) })
+          raise Homebrew::Overlay::InheritedKegError.new(
+            Pathname(inherited_keg.to_path),
+            Homebrew::Overlay.base_prefix,
+          )
         end
 
         kegs.freeze.each do |keg|

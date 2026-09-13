@@ -22,6 +22,7 @@ require "linkage_checker"
 require "messages"
 require "mktemp"
 require "package_manager_cache"
+require "overlay"
 require "cask/caskroom"
 require "cmd/install"
 require "find"
@@ -159,10 +160,13 @@ class FormulaInstaller
     @api_bottle_loaded = T.let(false, T::Boolean)
     @selected_bottle = T.let(nil, T.nilable(Bottle))
     @enqueued_bottle_download = T.let(nil, T.nilable(Downloadable))
-
     # Take the original formula instance, which might have been swapped from an API instance to a source instance
     previously_fetched_formula = self.previously_fetched_formula
     @formula = previously_fetched_formula if previously_fetched_formula
+    @overlay_install_session = T.let(
+      Homebrew::Overlay::InstallSession.new,
+      Homebrew::Overlay::InstallSession,
+    )
 
     @ran_prelude_fetch_metadata = T.let(false, T::Boolean)
     @ran_prelude_fetch = T.let(false, T::Boolean)
@@ -324,6 +328,7 @@ class FormulaInstaller
   sig { params(metadata_only: T::Boolean).void }
   def prelude_fetch(metadata_only: false)
     unless @ran_prelude_fetch_metadata
+      Homebrew::Overlay.ensure_atomic_exchange_supported! if Homebrew::Overlay.transaction_required?(formula)
       deprecate_disable_type = DeprecateDisable.type(formula)
       if deprecate_disable_type.present?
         message = "#{formula.full_name} has been #{DeprecateDisable.message(formula)}"
@@ -597,6 +602,8 @@ class FormulaInstaller
 
     return if only_deps?
 
+    @overlay_install_session.start!(formula)
+
     formula.deprecated_flags.each do |deprecated_option|
       old_flag = deprecated_option.old_flag
       new_flag = deprecated_option.current_flag
@@ -654,11 +661,21 @@ on_request: installed_on_request?, options:)
     build_bottle_postinstall if build_bottle?
 
     opoo "Nothing was installed to #{formula.prefix}" unless formula.latest_version_installed?
+    @overlay_install_session.validate_install!
     end_time = Time.now
     Homebrew.messages.package_installed(formula.name, end_time - start_time)
-  # Always release locks for interrupts and exits too.
+  # Overlay rollback, descriptor release, and Homebrew lock release must
+  # also cover interrupts and process exits during installation.
   rescue Exception # rubocop:disable Lint/RescueException
-    unlock
+    begin
+      @overlay_install_session.abort!
+    ensure
+      begin
+        @overlay_install_session.close!
+      ensure
+        unlock
+      end
+    end
     raise
   end
 
@@ -908,8 +925,10 @@ on_request: installed_on_request?, options:)
     if dep_formula.latest_version_installed?
       installed_keg = Keg.new(dep_formula.prefix)
       tab ||= installed_keg.tab
-      tmp_keg = Pathname.new("#{installed_keg}.tmp")
-      installed_keg.rename(tmp_keg) unless tmp_keg.directory?
+      unless Homebrew::Overlay.inherited_keg?(installed_keg.to_path)
+        tmp_keg = Pathname.new("#{installed_keg}.tmp")
+        installed_keg.rename(tmp_keg) unless tmp_keg.directory?
+      end
     end
 
     if dep_formula.tap.present? && tab.present? && (tab_tap = tab.source["tap"].presence) &&
@@ -953,7 +972,13 @@ on_request: installed_on_request?, options:)
   rescue Exception => e # rubocop:disable Lint/RescueException
     Utils::Interrupts.ignore do
       tmp_keg.rename(installed_keg.to_path) if tmp_keg && !installed_keg.directory?
-      linked_keg.link(verbose: verbose?) if keg_was_linked
+      if keg_was_linked && !linked_keg.linked?
+        if Homebrew::Overlay.inherited_keg?(linked_keg.to_path)
+          Homebrew::Overlay.sync!
+        else
+          linked_keg.link(verbose: verbose?)
+        end
+      end
     end
     raise unless e.is_a? FormulaInstallationAlreadyAttemptedError
 
@@ -1006,14 +1031,29 @@ on_request: installed_on_request?, options:)
 
     ohai "Finishing up" if verbose?
 
+    @overlay_install_session.publish!
     keg = Keg.new(formula.prefix)
+    overlay_managed_install = @overlay_install_session.managed?
+    fix_linkage = !@poured_bottle || !formula.bottle_specification.skip_relocation?(tab: keg.tab)
+
+    # The durable overlay package boundary deliberately precedes native link,
+    # service, etc/var, and formula post-install effects. Those operations can
+    # modify regular files or arbitrary paths and are not universally
+    # reversible. A later failure therefore leaves the private keg installed,
+    # matching native Homebrew's installed-but-unlinked/post-install-failed
+    # behavior instead of restoring the base rack beneath stale external state.
+    if overlay_managed_install
+      fix_dynamic_linkage(keg) if fix_linkage
+      @overlay_install_session.commit!(keg)
+    end
+
     link(keg)
     warning = link_manual_command_warning
     opoo warning if !quiet? && warning.present?
 
     install_service
 
-    fix_dynamic_linkage(keg) if !@poured_bottle || !formula.bottle_specification.skip_relocation?(tab: keg.tab)
+    fix_dynamic_linkage(keg) if fix_linkage && !overlay_managed_install
 
     require "install"
     Homebrew::Install.global_post_install
@@ -1084,13 +1124,19 @@ on_request: installed_on_request?, options:)
       Utils::Curl.clear_path_cache
     end
 
+    @overlay_install_session.complete_native_install!
+    self.class.installed << formula
+
     caveats
 
     ohai "Summary" if verbose? || show_summary_heading?
     puts summary
-
-    self.class.installed << formula
+  # Overlay rollback must also cover interrupts and process exits during finalization.
+  rescue Exception # rubocop:disable Lint/RescueException
+    @overlay_install_session.abort!
+    raise
   ensure
+    @overlay_install_session.close!
     unlock
   end
 
@@ -1163,9 +1209,14 @@ on_request: installed_on_request?, options:)
     # 1. formulae can modify ENV, so we must ensure that each
     #    installation has a pristine ENV when it starts, forking now is
     #    the easiest way to do this
-    with_env(HOMEBREW_BUILD_STAGING_PATH: staging_path, HOMEBREW_BUILD_FETCH_PHASE: nil) do
+    with_env(
+      **@overlay_install_session.build_environment,
+      HOMEBREW_BUILD_STAGING_PATH: staging_path,
+      HOMEBREW_BUILD_FETCH_PHASE: nil,
+    ) do
       Sandbox.run_or_fork(*build_args(formula_path), step: "building", retain_tmp:, debug: debug?) do |sandbox|
         add_build_sandbox_rules(sandbox, formula_path, log_name: "build")
+        @overlay_install_session.apply_build_sandbox_rules(sandbox)
         if interactive?
           sandbox.allow_write_path(Dir.home)
         else
@@ -1219,9 +1270,14 @@ on_request: installed_on_request?, options:)
     @formula = Homebrew::API::Formula.source_download_formula(formula) if formula.loaded_from_api?
 
     retain_tmp = keep_tmp? || debug_symbols? || interactive?
-    with_env(HOMEBREW_BUILD_FETCH_PHASE: "1", HOMEBREW_BUILD_STAGING_PATH: staging_path) do
+    with_env(
+      **@overlay_install_session.build_environment,
+      HOMEBREW_BUILD_FETCH_PHASE: "1",
+      HOMEBREW_BUILD_STAGING_PATH: staging_path,
+    ) do
       Sandbox.run_or_fork(*build_args(formula_path), step: "fetching", retain_tmp:, debug: debug?) do |sandbox|
         add_build_sandbox_rules(sandbox, formula_path, log_name: "fetch")
+        @overlay_install_session.apply_build_sandbox_rules(sandbox)
         sandbox.deny_read_home
         sandbox.allow_write_temp_and_cache
         sandbox.allow_write_path(staging_path) if staging_path

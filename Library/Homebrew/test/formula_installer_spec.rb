@@ -134,7 +134,100 @@ RSpec.describe FormulaInstaller do
     end.to raise_error("stopped after preinstall checks")
   end
 
+  describe "#install" do
+    it "finalizes an owned overlay mutation when no local keg was created" do
+      formula = formula "overlay-no-keg-failure" do
+        T.bind(self, T.class_of(Formula))
+        url "foo-1.0"
+      end
+      installer = described_class.new(formula)
+      generation = "a" * 64
+      mutation_active = false
+      base_lease = instance_double(File)
+
+      allow(installer).to receive_messages(
+        check_conflicts: nil,
+        ignore_deps?:    true,
+        lock:            nil,
+        only_deps?:      false,
+        pour_bottle?:    true,
+        quiet?:          true,
+      )
+      allow(Homebrew::EnvConfig).to receive(:overlay?).and_return(true)
+      allow(Homebrew::Overlay).to receive_messages(
+        active?:                        true,
+        acquire_base_mutation_lease:    base_lease,
+        begin_formula_transaction:      nil,
+        current_base_generation:        generation,
+        local_keg_realization?:         false,
+        validate_local_install_target!: nil,
+      )
+      allow(Homebrew::Overlay).to receive(:mutation_active?) { mutation_active }
+      allow(Homebrew::Overlay).to receive(:release_base_mutation_lease).with(base_lease)
+      allow(formula).to receive(:deprecated_flags).and_raise("failed before creating a keg")
+
+      expect(Homebrew::Overlay).to receive(:begin_mutation!).ordered do
+        mutation_active = true
+      end
+      expect(Homebrew::Overlay).to receive(:discard_local_keg!).ordered.and_return(false)
+      expect(Homebrew::Overlay).to receive(:sync!).with(mutation: true).ordered do
+        mutation_active = false
+      end
+
+      expect { installer.install }.to raise_error("failed before creating a keg")
+      expect(mutation_active).to be(false)
+    end
+  end
+
   describe "#finish" do
+    it "aborts and closes the overlay session when publication validation fails" do
+      formula = formula "overlay-generation-race" do
+        T.bind(self, T.class_of(Formula))
+        url "foo-1.0"
+      end
+      error = Homebrew::Overlay::BaseGenerationChangedError.new("a" * 64, "b" * 64)
+      session = instance_double(Homebrew::Overlay::InstallSession)
+
+      allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+      installer = described_class.new(formula)
+      allow(installer).to receive_messages(only_deps?: false, unlock: nil, verbose?: false)
+
+      expect(session).to receive(:publish!).ordered.and_raise(error)
+      expect(session).to receive(:abort!).ordered
+      expect(session).to receive(:close!).ordered
+
+      expect { installer.finish }.to raise_error(error)
+    end
+
+    it "commits an overlay replacement before native link side effects" do
+      formula = formula "overlay-commit-boundary" do
+        T.bind(self, T.class_of(Formula))
+        url "foo-1.0"
+      end
+      keg = instance_double(Keg)
+      session = instance_double(Homebrew::Overlay::InstallSession)
+
+      allow(Homebrew::Overlay::InstallSession).to receive(:new).and_return(session)
+      installer = described_class.new(formula)
+      allow(Keg).to receive(:new).with(formula.prefix).and_return(keg)
+      allow(installer).to receive_messages(
+        fix_dynamic_linkage: nil,
+        only_deps?:          false,
+        unlock:              nil,
+        verbose?:            false,
+      )
+
+      expect(session).to receive(:publish!).ordered
+      expect(session).to receive(:managed?).ordered.and_return(true)
+      expect(installer).to receive(:fix_dynamic_linkage).with(keg).ordered
+      expect(session).to receive(:commit!).with(keg).ordered
+      expect(installer).to receive(:link).with(keg).ordered.and_raise("link failed")
+      expect(session).to receive(:abort!).ordered
+      expect(session).to receive(:close!).ordered
+
+      expect { installer.finish }.to raise_error("link failed")
+    end
+
     it "runs structured post-install work through the post-install subprocess" do
       formula = formula "finish-install-steps" do
         T.bind(self, T.class_of(Formula))
@@ -172,6 +265,7 @@ RSpec.describe FormulaInstaller do
       expect(formula).to receive(:install_etc_var).ordered
       expect(formula).not_to receive(:run_post_install_steps)
       expect(installer).to receive(:post_install).ordered
+      expect(Homebrew::Overlay).not_to receive(:bump_generation!)
 
       installer.finish
     end

@@ -17,6 +17,7 @@ require "utils/output"
 require "utils/topological_hash"
 require "install/check"
 require "api/source_download"
+require "overlay"
 
 module Homebrew
   # Helper module for performing (pre-)install checks.
@@ -624,7 +625,6 @@ module Homebrew
       sig { params(formula_installer: FormulaInstaller, upgrade: T::Boolean).void }
       def install_formula(formula_installer, upgrade:)
         formula = formula_installer.formula
-
         formula_installer.check_installation_already_attempted
 
         if upgrade
@@ -650,7 +650,17 @@ module Homebrew
       ensure
         # restore previous installation state if build failed
         begin
-          linked_kegs&.each(&:link) unless formula&.latest_version_installed?
+          unless formula&.latest_version_installed?
+            inherited_link = T.let(false, T::Boolean)
+            linked_kegs&.each do |keg|
+              if Homebrew::Overlay.inherited_keg?(keg.to_path)
+                inherited_link = true
+              else
+                keg.link unless keg.linked?
+              end
+            end
+            Homebrew::Overlay.sync! if inherited_link
+          end
         rescue
           nil
         end

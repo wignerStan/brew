@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "keg"
+require "overlay"
 require "utils/output"
 
 module Homebrew
@@ -45,6 +46,7 @@ module Homebrew
 
         # Check if the installed formula is from a different tap
         if formula.any_version_installed? &&
+           !(Homebrew::Overlay.active? && Homebrew::Overlay.inherited_only_formula?(formula)) &&
            (current_tap_name = formula.tap&.name.presence) &&
            (installed_keg_tab = formula.any_installed_keg&.tab.presence) &&
            (installed_tap_name = installed_keg_tab.tap&.name.presence) &&
@@ -190,6 +192,8 @@ module Homebrew
         return false unless formula.opt_prefix.directory?
 
         keg = Keg.new(Utils::Path.resolved_path(formula.opt_prefix))
+        return false if Homebrew::Overlay.inherited_keg?(keg.to_path)
+
         tab = keg.tab
         unless tab.installed_on_request
           tab.installed_on_request = true

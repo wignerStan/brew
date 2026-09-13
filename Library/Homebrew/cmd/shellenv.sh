@@ -7,7 +7,20 @@
 # Please do not submit PRs to remove it!
 # shellcheck disable=SC2154
 homebrew-shellenv() {
-  if [[ "${HOMEBREW_PATH}:" == "${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:"* ]]
+  local PATH_HELPER_ROOT="${PATH_HELPER_ROOT:-}"
+  local HOMEBREW_PATH="${HOMEBREW_PATH:-${PATH:-}}"
+  local HOMEBREW_SHELLENV_PATH_PREFIX="${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin"
+  local HOMEBREW_SHELLENV_INFO_PREFIX="${HOMEBREW_PREFIX}/share/info"
+  local HOMEBREW_SHELLENV_BASE_PREFIX=""
+  if [[ -n "${HOMEBREW_OVERLAY_ACTIVE:-}" && -n "${HOMEBREW_OVERLAY_BASE_PREFIX:-}" &&
+        "${HOMEBREW_OVERLAY_BASE_PREFIX%/}" != "${HOMEBREW_PREFIX}" ]]
+  then
+    HOMEBREW_SHELLENV_BASE_PREFIX="${HOMEBREW_OVERLAY_BASE_PREFIX%/}"
+    HOMEBREW_SHELLENV_PATH_PREFIX+=":${HOMEBREW_SHELLENV_BASE_PREFIX}/bin:${HOMEBREW_SHELLENV_BASE_PREFIX}/sbin"
+    HOMEBREW_SHELLENV_INFO_PREFIX+=":${HOMEBREW_SHELLENV_BASE_PREFIX}/share/info"
+  fi
+
+  if [[ "${HOMEBREW_PATH}:" == "${HOMEBREW_SHELLENV_PATH_PREFIX}:"* ]]
   then
     return
   fi
@@ -50,49 +63,81 @@ homebrew-shellenv() {
       echo "set --global --export HOMEBREW_PREFIX \"${HOMEBREW_PREFIX}\";"
       echo "set --global --export HOMEBREW_CELLAR \"${HOMEBREW_CELLAR}\";"
       echo "set --global --export HOMEBREW_REPOSITORY \"${HOMEBREW_REPOSITORY}\";"
+      if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+      then
+        echo "set --global --export HOMEBREW_OVERLAY_ACTIVE 1;"
+        echo "set --global --export HOMEBREW_OVERLAY_BASE_PREFIX \"${HOMEBREW_SHELLENV_BASE_PREFIX}\";"
+        echo "fish_add_path --global --move --path \"${HOMEBREW_SHELLENV_BASE_PREFIX}/bin\" \"${HOMEBREW_SHELLENV_BASE_PREFIX}/sbin\";"
+      fi
       echo "fish_add_path --global --move --path \"${HOMEBREW_PREFIX}/bin\" \"${HOMEBREW_PREFIX}/sbin\";"
       echo "if test -n \"\$MANPATH\"; set --global --export MANPATH (string replace --regex '^:*(.*?):*\$' ':\$1' -- \"\$MANPATH\"); end;"
-      echo "if not set --query INFOPATH; set INFOPATH ''; end; set --global --export INFOPATH \"${HOMEBREW_PREFIX}/share/info\" \$INFOPATH;"
+      if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+      then
+        echo "if not set --query INFOPATH; set INFOPATH ''; end;"
+        echo "if not contains \"${HOMEBREW_SHELLENV_BASE_PREFIX}/share/info\" \$INFOPATH; set --global --prepend INFOPATH \"${HOMEBREW_SHELLENV_BASE_PREFIX}/share/info\"; end;"
+        echo "if not contains \"${HOMEBREW_PREFIX}/share/info\" \$INFOPATH; set --global --prepend INFOPATH \"${HOMEBREW_PREFIX}/share/info\"; end;"
+      else
+        echo "if not set --query INFOPATH; set INFOPATH ''; end; set --global --export INFOPATH \"${HOMEBREW_PREFIX}/share/info\" \$INFOPATH;"
+      fi
       ;;
     csh | -csh | tcsh | -tcsh)
       echo "setenv HOMEBREW_PREFIX ${HOMEBREW_PREFIX};"
       echo "setenv HOMEBREW_CELLAR ${HOMEBREW_CELLAR};"
       echo "setenv HOMEBREW_REPOSITORY ${HOMEBREW_REPOSITORY};"
-      if [[ -n "${PATH_HELPER_ROOT}" ]]
+      if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+      then
+        echo "setenv HOMEBREW_OVERLAY_ACTIVE 1;"
+        echo "setenv HOMEBREW_OVERLAY_BASE_PREFIX ${HOMEBREW_SHELLENV_BASE_PREFIX};"
+      fi
+      if [[ -n "${PATH_HELPER_ROOT}" && -z "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
       then
         echo "eval \`/usr/bin/env PATH_HELPER_ROOT=\"${PATH_HELPER_ROOT}\" /usr/libexec/path_helper -c\`;"
       else
-        echo "setenv PATH \"${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:\$PATH\";"
+        echo "setenv PATH \"${HOMEBREW_SHELLENV_PATH_PREFIX}:\$PATH\";"
       fi
       echo "test \${?MANPATH} -eq 1 && test -n \"\${MANPATH}\" && setenv MANPATH :\`printf '%s' \"\${MANPATH}\" | /usr/bin/sed -e 's/^:*//' -e 's/:*\$//'\`;"
       echo "test \${?INFOPATH} -eq 1 || setenv INFOPATH '';"
-      echo "setenv INFOPATH \"${HOMEBREW_PREFIX}/share/info:\${INFOPATH}\";"
+      echo "setenv INFOPATH \"${HOMEBREW_SHELLENV_INFO_PREFIX}:\${INFOPATH}\";"
       ;;
     pwsh | -pwsh | pwsh-preview | -pwsh-preview)
       echo "[System.Environment]::SetEnvironmentVariable('HOMEBREW_PREFIX','${HOMEBREW_PREFIX}',[System.EnvironmentVariableTarget]::Process)"
       echo "[System.Environment]::SetEnvironmentVariable('HOMEBREW_CELLAR','${HOMEBREW_CELLAR}',[System.EnvironmentVariableTarget]::Process)"
       echo "[System.Environment]::SetEnvironmentVariable('HOMEBREW_REPOSITORY','${HOMEBREW_REPOSITORY}',[System.EnvironmentVariableTarget]::Process)"
-      echo "[System.Environment]::SetEnvironmentVariable('PATH',\$('${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:'+\$ENV:PATH),[System.EnvironmentVariableTarget]::Process)"
+      if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+      then
+        echo "[System.Environment]::SetEnvironmentVariable('HOMEBREW_OVERLAY_ACTIVE','1',[System.EnvironmentVariableTarget]::Process)"
+        echo "[System.Environment]::SetEnvironmentVariable('HOMEBREW_OVERLAY_BASE_PREFIX','${HOMEBREW_SHELLENV_BASE_PREFIX}',[System.EnvironmentVariableTarget]::Process)"
+      fi
+      echo "[System.Environment]::SetEnvironmentVariable('PATH',\$('${HOMEBREW_SHELLENV_PATH_PREFIX}:'+\$ENV:PATH),[System.EnvironmentVariableTarget]::Process)"
       echo "if (\${ENV:MANPATH}) { [System.Environment]::SetEnvironmentVariable('MANPATH',(':'+\${ENV:MANPATH}.Trim(':')),[System.EnvironmentVariableTarget]::Process) }"
-      echo "[System.Environment]::SetEnvironmentVariable('INFOPATH',('${HOMEBREW_PREFIX}/share/info:'+\${ENV:INFOPATH}),[System.EnvironmentVariableTarget]::Process)"
+      echo "[System.Environment]::SetEnvironmentVariable('INFOPATH',('${HOMEBREW_SHELLENV_INFO_PREFIX}:'+\${ENV:INFOPATH}),[System.EnvironmentVariableTarget]::Process)"
       ;;
     *)
       echo "export HOMEBREW_PREFIX=\"${HOMEBREW_PREFIX}\";"
       echo "export HOMEBREW_CELLAR=\"${HOMEBREW_CELLAR}\";"
       echo "export HOMEBREW_REPOSITORY=\"${HOMEBREW_REPOSITORY}\";"
+      if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+      then
+        echo "export HOMEBREW_OVERLAY_ACTIVE=1;"
+        echo "export HOMEBREW_OVERLAY_BASE_PREFIX=\"${HOMEBREW_SHELLENV_BASE_PREFIX}\";"
+      fi
       if [[ "${HOMEBREW_SHELL_NAME}" == "zsh" ]] || [[ "${HOMEBREW_SHELL_NAME}" == "-zsh" ]]
       then
         echo "fpath[1,0]=\"${HOMEBREW_PREFIX}/share/zsh/site-functions\";"
+        if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+        then
+          echo "fpath[2,0]=\"${HOMEBREW_SHELLENV_BASE_PREFIX}/share/zsh/site-functions\";"
+        fi
         echo "export FPATH;"
       fi
-      if [[ -n "${PATH_HELPER_ROOT}" ]]
+      if [[ -n "${PATH_HELPER_ROOT}" && -z "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
       then
         echo "eval \"\$(/usr/bin/env PATH_HELPER_ROOT=\"${PATH_HELPER_ROOT}\" /usr/libexec/path_helper -s)\""
       else
-        echo "export PATH=\"${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin\${PATH+:\$PATH}\";"
+        echo "export PATH=\"${HOMEBREW_SHELLENV_PATH_PREFIX}\${PATH+:\$PATH}\";"
       fi
       echo "[ -z \"\${MANPATH-}\" ] || { export MANPATH=\"\${MANPATH%\"\${MANPATH##*[!:]}\"}\"; export MANPATH=\":\${MANPATH#\"\${MANPATH%%[!:]*}\"}\"; };"
-      echo "export INFOPATH=\"${HOMEBREW_PREFIX}/share/info:\${INFOPATH:-}\";"
+      echo "export INFOPATH=\"${HOMEBREW_SHELLENV_INFO_PREFIX}:\${INFOPATH:-}\";"
       ;;
   esac
 }

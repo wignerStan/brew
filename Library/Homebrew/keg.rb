@@ -8,6 +8,7 @@ require "cachable"
 require "keg_relocate"
 require "language/python"
 require "lock_file"
+require "overlay"
 require "pkg_version"
 require "utils/output"
 require "utils/path"
@@ -123,6 +124,14 @@ class Keg
 
     if (path = original_path.realpath)
       until path.root?
+        if Homebrew::Overlay.active?
+          logical_path = Homebrew::Overlay.logical_keg_path(path)
+          if logical_path != path
+            return Keg.new(logical_path) if Homebrew::Overlay.active_prefix_path?(original_path)
+
+            return Keg.new(path)
+          end
+        end
         return Keg.new(path) if path.parent.parent == HOMEBREW_CELLAR.realpath
 
         path = path.parent.realpath # realpath() prevents root? failing
@@ -185,7 +194,7 @@ class Keg
       HOMEBREW_CELLAR,
       HOMEBREW_LOCKS,
       HOMEBREW_LOGS,
-      HOMEBREW_REPOSITORY,
+      *(Homebrew::Overlay.active? ? [] : [HOMEBREW_REPOSITORY]),
       *HOMEBREW_PREFIX.glob("lib/python*/site-packages"),
     ]).sort.uniq.freeze, T.nilable(T::Array[Pathname]))
   end
@@ -206,8 +215,23 @@ class Keg
 
   sig { params(path: Pathname).void }
   def initialize(path)
-    path = resolved_path(path) if path.to_s.start_with?("#{HOMEBREW_PREFIX}/opt/")
-    raise "#{path} is not a valid keg" if path.parent.parent.realpath != HOMEBREW_CELLAR.realpath
+    keg_record_path = path.to_s.start_with?("#{HOMEBREW_PREFIX}/opt/")
+    if Homebrew::Overlay.active?
+      base_prefix = Homebrew::Overlay.base_prefix
+      keg_record_path ||= [
+        "#{HOMEBREW_PREFIX}/var/homebrew/linked/",
+        "#{base_prefix}/opt/",
+        "#{base_prefix}/var/homebrew/linked/",
+      ].any? { |root| path.to_s.start_with?(root) }
+    end
+    if keg_record_path
+      # Inherited overlay keg records point at the administrator record, which
+      # is itself a symlink into the lower Cellar. `resolved_path` only expands
+      # the first hop on this layout, so use realpath to validate the actual
+      # keg against both the user and lower Cellars.
+      path = path.realpath
+    end
+    raise "#{path} is not a valid keg" unless Homebrew::Overlay.valid_keg_path?(path)
     raise "#{path} is not a directory" unless path.directory?
 
     @path = path
@@ -273,7 +297,7 @@ class Keg
   def linked?
     linked_keg_record.symlink? &&
       linked_keg_record.directory? &&
-      path == resolved_path(linked_keg_record)
+      path == Homebrew::Overlay.keg_record_target(linked_keg_record)
   end
 
   sig { void }
@@ -284,7 +308,7 @@ class Keg
 
   sig { returns(T::Boolean) }
   def optlinked?
-    opt_record.symlink? && path == resolved_path(opt_record)
+    opt_record.symlink? && path == Homebrew::Overlay.keg_record_target(opt_record)
   end
 
   sig { void }
@@ -322,6 +346,13 @@ class Keg
 
   sig { params(raise_failures: T::Boolean).void }
   def uninstall(raise_failures: false)
+    if Homebrew::Overlay.inherited_keg?(path)
+      raise Homebrew::Overlay::InheritedKegError.new(path, Homebrew::Overlay.base_prefix)
+    end
+
+    owns_overlay_mutation = Homebrew::EnvConfig.overlay? && !Homebrew::Overlay.mutation_active?
+    Homebrew::Overlay.begin_mutation! if owns_overlay_mutation
+
     CacheStoreDatabase.use(:linkage) do |db|
       break unless db.created?
 
@@ -330,12 +361,25 @@ class Keg
                                    CacheStoreDatabase[String, T::Hash[T.any(String, Symbol), T.anything]])).delete!
     end
 
-    FileUtils.rm_r(path)
-    rmdir_if_possible(path.parent)
+    # Remove namespace records while the keg still exists, so an interruption
+    # leaves an installed-but-unlinked keg rather than broken records that block
+    # overlay reconciliation.
     remove_opt_record if optlinked?
     remove_linked_keg_record if linked?
     remove_old_aliases
     remove_oldname_opt_records
+    FileUtils.rm_r(path)
+    path.parent.rmdir_if_possible
+    if Homebrew::Overlay.active? && path.parent.expand_path == (HOMEBREW_CELLAR/name).expand_path
+      Homebrew::Overlay.restore_inherited_rack!(name)
+    end
+    if owns_overlay_mutation
+      if Homebrew::Overlay.active?
+        Homebrew::Overlay.sync!(mutation: true)
+      else
+        Homebrew::Overlay.bump_generation!
+      end
+    end
   rescue Errno::EACCES, Errno::ENOTEMPTY
     raise if raise_failures
 
@@ -354,6 +398,8 @@ class Keg
 
   sig { params(verbose: T::Boolean, dry_run: T::Boolean).returns(Integer) }
   def unlink(verbose: false, dry_run: false)
+    owns_overlay_mutation = !dry_run && Homebrew::EnvConfig.overlay? && !Homebrew::Overlay.mutation_active?
+    Homebrew::Overlay.begin_mutation! if owns_overlay_mutation
     ObserverPathnameExtension.reset_counts!
 
     dirs = []
@@ -391,7 +437,9 @@ class Keg
       (dirs - self.class.must_exist_subdirectories).reverse_each { |dir| rmdir_if_possible(dir) }
     end
 
-    ObserverPathnameExtension.n
+    count = ObserverPathnameExtension.n
+    Homebrew::Overlay.bump_generation! if owns_overlay_mutation
+    count
   end
 
   sig { params(_block: T.proc.void).void }
@@ -493,9 +541,11 @@ class Keg
   def link(verbose: false, dry_run: false, overwrite: false)
     raise AlreadyLinkedError, self if linked_keg_record.directory?
 
+    owns_overlay_mutation = !dry_run && Homebrew::EnvConfig.overlay? && !Homebrew::Overlay.mutation_active?
+    Homebrew::Overlay.begin_mutation! if owns_overlay_mutation
     ObserverPathnameExtension.reset_counts!
 
-    optlink(verbose:, dry_run:, overwrite:) unless dry_run
+    optlink(verbose:, dry_run:, overwrite:, record_mutation: false) unless dry_run
 
     # yeah indeed, you have to force anything you need in the main tree into
     # these dirs REMEMBER that *NOT* everything needs to be in the main tree
@@ -590,9 +640,12 @@ class Keg
       dst.dirname.mkpath
       FileUtils.ln_sf(source, dst)
     end
+    Homebrew::Overlay.bump_generation! if owns_overlay_mutation
     raise
   else
-    ObserverPathnameExtension.n
+    count = ObserverPathnameExtension.n
+    Homebrew::Overlay.bump_generation! if owns_overlay_mutation
+    count
   ensure
     @overwritten_cask_symlinks.clear
     @cask_symlink_tokens = nil
@@ -631,8 +684,18 @@ class Keg
     tab.aliases || []
   end
 
-  sig { params(verbose: T::Boolean, dry_run: T::Boolean, overwrite: T::Boolean).void }
-  def optlink(verbose: false, dry_run: false, overwrite: false)
+  sig do
+    params(
+      verbose:         T::Boolean,
+      dry_run:         T::Boolean,
+      overwrite:       T::Boolean,
+      record_mutation: T::Boolean,
+    ).void
+  end
+  def optlink(verbose: false, dry_run: false, overwrite: false, record_mutation: true)
+    owns_overlay_mutation = record_mutation && !dry_run && Homebrew::EnvConfig.overlay? &&
+      !Homebrew::Overlay.mutation_active?
+    Homebrew::Overlay.begin_mutation! if owns_overlay_mutation
     remove_old_aliases
     opt_record.delete if opt_record.symlink? || opt_record.exist?
     make_relative_symlink(opt_record, path, verbose:, dry_run:, overwrite:)
@@ -646,6 +709,7 @@ class Keg
       record.delete
       make_relative_symlink(record, path, verbose:, dry_run:, overwrite:)
     end
+    Homebrew::Overlay.bump_generation! if owns_overlay_mutation
   end
 
   sig { void }
@@ -786,6 +850,13 @@ class Keg
   def resolve_any_conflicts(dst, dry_run: false, verbose: false, overwrite: false)
     return unless dst.symlink?
 
+    if Homebrew::Overlay.inherited_prefix_link?(dst)
+      return true if dry_run
+
+      Homebrew::Overlay.remove_inherited_prefix_link!(dst)
+      return
+    end
+
     src = resolved_path(dst)
 
     # `src` itself may be a symlink, so check lstat to ensure we are dealing with
@@ -816,6 +887,8 @@ class Keg
 
   sig { params(dst: Pathname, src: Pathname, verbose: T::Boolean, dry_run: T::Boolean, overwrite: T::Boolean).void }
   def make_relative_symlink(dst, src, verbose: false, dry_run: false, overwrite: false)
+    Homebrew::Overlay.remove_inherited_prefix_link!(dst) unless dry_run
+
     if dst.symlink? && src == resolved_path(dst)
       puts "Skipping; link already exists: #{dst}" if verbose
       return
