@@ -1,0 +1,203 @@
+name: Harden overlay RSpec contracts v15
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-rspec-hardening-v15-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refactor-overlay-rspec-hardening-v15
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: 06efc8ec5fc20fea833bd89a04bcbfa77b25b570
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  RESULT_BRANCH: refactor/overlay-rspec-hardening-v15-20260913
+
+jobs:
+  harden:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact recovery-clean candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
+
+      - name: Repair path APIs, stale pins, and stale test contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str, expected: int = 1) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} match(es), found {count}: {old!r}")
+              file_path.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace(
+              "Library/Homebrew/overlay/core.rb",
+              "      rack.rmdir_if_possible\n",
+              "      Utils::Path.rmdir_if_possible(rack)\n",
+          )
+          replace(
+              "Library/Homebrew/keg.rb",
+              "    path.parent.rmdir_if_possible\n",
+              "    Utils::Path.rmdir_if_possible(path.parent)\n",
+          )
+
+          formula_pin = "Library/Homebrew/formula_pin.rb"
+          replace(
+              formula_pin,
+              'require "overlay"\n',
+              'require "overlay"\nrequire "utils/path"\n',
+          )
+          replace(
+              formula_pin,
+              "    path.unlink if pinned?\n",
+              "    path.unlink if path.symlink?\n",
+          )
+          replace(
+              formula_pin,
+              "path.resolved_path",
+              "Utils::Path.resolved_path(path)",
+              expected=2,
+          )
+
+          core_spec = "Library/Homebrew/test/overlay/core_spec.rb"
+          replace(
+              core_spec,
+              "    expect(Homebrew).to receive(:safe_system).ordered do |environment, command, path, action, argument, **options|\n",
+              "    expect(described_class).to receive(:run_overlay_command!).ordered do |environment, command, path, action, argument, file_descriptors:|\n",
+              expected=2,
+          )
+          replace(
+              core_spec,
+              "      expect(options.fetch(descriptor)).to be_a(File)\n",
+              "      expect(file_descriptors.fetch(descriptor)).to be_a(File)\n",
+              expected=2,
+          )
+
+          bundle_spec = "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb"
+          replace(
+              bundle_spec,
+              "      allow(Homebrew::Bundle).to receive(:mark_as_installed_on_request!)\n      allow(Kernel).to receive(:system)\n      allow(described_class).to receive(:system_output_no_stderr).and_return(\"\")\n",
+              "      allow(Homebrew::Bundle).to receive(:mark_as_installed_on_request!)\n      allow(Kernel).to receive(:system).and_return(true)\n      allow(described_class).to receive(:system_output_no_stderr).and_return(\"\")\n",
+          )
+
+          link_spec = "Library/Homebrew/test/cmd/link_spec.rb"
+          replace(
+              link_spec,
+              "    allow(cmd.args.named).to receive(:to_latest_kegs).and_return([keg])\n",
+              "    allow(cmd.args.named).to receive(:to_kegs_to_casks).and_return([[keg], []])\n",
+          )
+
+          overlay_sync_spec = Path("Library/Homebrew/test/cmd/overlay-sync_spec.rb")
+          if overlay_sync_spec.exists():
+              raise SystemExit(f"{overlay_sync_spec}: refusing to overwrite an existing spec")
+          overlay_sync_spec.write_text(
+              "# typed: true\n"
+              "# frozen_string_literal: true\n\n"
+              "require \"cmd/overlay-sync\"\n"
+              "require \"cmd/shared_examples/args_parse\"\n\n"
+              "RSpec.describe Homebrew::Cmd::OverlaySync do\n"
+              "  it_behaves_like \"parseable arguments\"\n\n"
+              "  it \"reports that a native overlay is required\", :integration_test do\n"
+              "    expect { brew \"overlay-sync\" }\n"
+              "      .to output(/requires an active per-user Homebrew overlay/).to_stderr\n"
+              "      .and be_a_failure\n"
+              "  end\n"
+              "end\n",
+              encoding="utf-8",
+          )
+          PY
+
+          bin/brew style --fix --display-cop-names \
+            Library/Homebrew/overlay/core.rb \
+            Library/Homebrew/keg.rb \
+            Library/Homebrew/formula_pin.rb \
+            Library/Homebrew/test/overlay/core_spec.rb \
+            Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb \
+            Library/Homebrew/test/cmd/link_spec.rb \
+            Library/Homebrew/test/cmd/overlay-sync_spec.rb
+          git diff --check
+
+      - name: Run static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -c Library/Homebrew/overlay/core.rb >/dev/null
+          ruby -c Library/Homebrew/keg.rb >/dev/null
+          ruby -c Library/Homebrew/formula_pin.rb >/dev/null
+          ruby -c Library/Homebrew/test/overlay/core_spec.rb >/dev/null
+          ruby -c Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb >/dev/null
+          ruby -c Library/Homebrew/test/cmd/link_spec.rb >/dev/null
+          ruby -c Library/Homebrew/test/cmd/overlay-sync_spec.rb >/dev/null
+          bin/brew typecheck
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Run every previously failing spec file
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel \
+            --only=overlay/core,formula_pin,keg,cmd/upgrade,cleanup,formula_installer_bottle,migrator,formula_installer,formula,cmd/autoremove,cmd/bundle/cleanup_subcommand,cmd/link,manpages,cmd/overlay-sync
+
+      - name: Commit and publish RSpec hardening
+        id: result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add -A
+          if git diff --cached --quiet; then
+            echo "RSpec hardening produced no tracked changes." >&2
+            exit 1
+          fi
+          git commit -m "Fix overlay RSpec regressions after upstream rebase"
+          after="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${RESULT_BRANCH}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing result branch ${RESULT_BRANCH}." >&2
+            exit 1
+          fi
+          git push origin "${after}:refs/heads/${RESULT_BRANCH}"
+
+      - name: Report result identity
+        if: always()
+        shell: bash
+        env:
+          AFTER: ${{ steps.result.outputs.after }}
+        run: |
+          printf 'RSpec-clean candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Result branch: %s\n' "${RESULT_BRANCH}"
