@@ -124,7 +124,7 @@ done
 lock_case="${work}/hardlinked-owner-lock"
 make_case "${lock_case}"
 mkdir -p "${lock_case}/user/var/homebrew/overlay/transactions/.new-txn-lock" \
-         "${lock_case}/user/var/homebrew/overlay/transactions/.locks"
+  "${lock_case}/user/var/homebrew/overlay/transactions/.locks"
 printf 'owner-victim\n' >"${lock_case}/owner-victim"
 chmod 0600 "${lock_case}/owner-victim"
 ln "${lock_case}/owner-victim" \

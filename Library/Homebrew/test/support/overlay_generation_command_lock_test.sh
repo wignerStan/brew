@@ -27,7 +27,7 @@ test -f "${dirty}"
 for command in --ensure-generation --mark-generation-dirty --recover-generation --bump-generation
 do
   if env -u HOMEBREW_OVERLAY_MUTATION_LOCK_FD \
-    bash "${script}" "${command}" "${prefix}" >"${work}/${command#--}.out" 2>"${work}/${command#--}.err"
+     bash "${script}" "${command}" "${prefix}" >"${work}/${command#--}.out" 2>"${work}/${command#--}.err"
   then
     echo "${command} crossed a live package mutation" >&2
     exit 1
@@ -40,7 +40,7 @@ test -f "${dirty}"
 # file description may authorize the nested Ruby-to-shell command.
 exec 21<>"${mutation_lock}"
 if HOMEBREW_OVERLAY_MUTATION_LOCK_FD=21 \
-  bash "${script}" --bump-generation "${prefix}" >"${work}/reopened.out" 2>"${work}/reopened.err"
+   bash "${script}" --bump-generation "${prefix}" >"${work}/reopened.out" 2>"${work}/reopened.err"
 then
   echo 'reopened mutation descriptor unexpectedly authorized generation bump' >&2
   exit 1

@@ -137,10 +137,12 @@ rm -f "${stale_rack}/base/opt/foo" "${stale_rack}/base/var/homebrew/linked/foo"
 homebrew-overlay-bump-generation "${stale_rack}/base" >/dev/null
 : >"${stale_rack}/user/var/homebrew/overlay/view.state"
 homebrew-overlay-sync --force
-for path in \
-  "${stale_rack}/user/Cellar/foo" \
-  "${stale_rack}/user/opt/foo" \
+stale_paths=(
+  "${stale_rack}/user/Cellar/foo"
+  "${stale_rack}/user/opt/foo"
   "${stale_rack}/user/var/homebrew/linked/foo"
+)
+for path in "${stale_paths[@]}"
 do
   test ! -e "${path}"
   test ! -L "${path}"
