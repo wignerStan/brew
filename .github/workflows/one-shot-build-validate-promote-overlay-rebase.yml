@@ -1,0 +1,249 @@
+name: Build, validate, and promote overlay refactor rebase
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-rebase-v3-20260913
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: one-shot-overlay-refactor-rebase-v3
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  SOURCE_SHA: 011ccfad6cae49f30237af00e8506cf39dacb272
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  TARGET_BRANCH: refactor/overlay-maintainability
+  TARGET_BEFORE: d986308aaef0c7dd1a0a669b25fdd94723e28c2f
+  CANDIDATE_BRANCH: automation/refactor-overlay-rebased-candidate-20260913
+
+jobs:
+  prepare:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    outputs:
+      after: ${{ steps.candidate.outputs.after }}
+      tree: ${{ steps.candidate.outputs.tree }}
+    steps:
+      - name: Check out trusted coordinator
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Preserve the strict conflict resolver outside the worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0700 \
+            .github/scripts/resolve_overlay_upstream_rebase.py \
+            "${RUNNER_TEMP}/resolve_overlay_upstream_rebase.py"
+
+      - name: Build one upstream-rooted overlay commit
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/target"
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse refs/remotes/origin/target)" = "${TARGET_BEFORE}"
+          test "$(git rev-parse refs/remotes/upstream/main)" = "${UPSTREAM_SHA}"
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+
+          git checkout --detach "${UPSTREAM_SHA}"
+          git merge --squash --no-commit "${SOURCE_SHA}" || true
+          python3 "${RUNNER_TEMP}/resolve_overlay_upstream_rebase.py"
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git add -A
+          git diff --cached --check
+          git commit -m "Add hardened native user overlay"
+
+          after="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+          test -z "$(git status --porcelain)"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
+
+          git push --force origin \
+            "${after}:refs/heads/${CANDIDATE_BRANCH}"
+
+  validate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      validated_sha: ${{ steps.attest.outputs.sha }}
+      validated_tree: ${{ steps.attest.outputs.tree }}
+    steps:
+      - name: Check out the exact candidate without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.after }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify candidate ancestry and identity
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+          test -z "$(git rev-list --merges "${UPSTREAM_SHA}..${AFTER}")"
+
+      - name: Validate formatting and source syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "${UPSTREAM_SHA}...HEAD"
+          bash -n \
+            bin/brew \
+            Library/Homebrew/cmd/shellenv.sh \
+            Library/Homebrew/utils/overlay.sh \
+            Library/Homebrew/utils/overlay/core.sh
+          while IFS= read -r test_script; do
+            bash -n "${test_script}"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile \
+            Library/Homebrew/test/support/overlay_style_delta_check.py \
+            Library/Homebrew/test/support/overlay_style_delta_check_test.py
+          python3 Library/Homebrew/test/support/overlay_style_delta_check_test.py
+          bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Reject style offenses in the overlay delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${UPSTREAM_SHA}" HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Attest exact validated candidate
+        id: attest
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${AFTER}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
+          printf 'sha=%s\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
+
+  promote:
+    needs: [prepare, validate]
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Promote only the attested commit from a clean repository
+        shell: bash
+        env:
+          AFTER: ${{ needs.prepare.outputs.after }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
+          VALIDATED_TREE: ${{ needs.validate.outputs.validated_tree }}
+          PUSH_TOKEN: ${{ secrets.OVERLAY_PROMOTION_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+
+          test -n "${PUSH_TOKEN}"
+          test "${AFTER}" = "${VALIDATED_SHA}"
+          test "${EXPECTED_TREE}" = "${VALIDATED_TREE}"
+
+          isolated_home="$(mktemp -d)"
+          repository="$(mktemp -d)"
+          template_dir="$(mktemp -d)"
+          askpass="$(mktemp)"
+          trap 'rm -rf "${isolated_home}" "${repository}" "${template_dir}"; rm -f "${askpass}"' EXIT
+          export HOME="${isolated_home}"
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          export GIT_TEMPLATE_DIR="${template_dir}"
+
+          cat >"${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *) printf '%s\n' "${PUSH_TOKEN:?}" ;;
+          esac
+          ASKPASS
+          chmod 0700 "${askpass}"
+
+          git init "${repository}"
+          git -C "${repository}" config core.hooksPath /dev/null
+          git -C "${repository}" config transfer.fsckObjects true
+          git -C "${repository}" config fetch.fsckObjects true
+          git -C "${repository}" remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "${repository}" remote add upstream \
+            https://github.com/Homebrew/brew.git
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${repository}" -c protocol.ext.allow=never \
+              fetch --no-tags --prune origin \
+              "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/target" \
+              "+refs/heads/${CANDIDATE_BRANCH}:refs/remotes/origin/candidate"
+          GIT_TERMINAL_PROMPT=0 \
+            git -C "${repository}" -c protocol.ext.allow=never \
+              fetch --no-tags --prune upstream \
+              +refs/heads/main:refs/remotes/upstream/main
+
+          test "$(git -C "${repository}" rev-parse refs/remotes/origin/target)" = "${TARGET_BEFORE}"
+          test "$(git -C "${repository}" rev-parse refs/remotes/origin/candidate)" = "${AFTER}"
+          test "$(git -C "${repository}" rev-parse refs/remotes/upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git -C "${repository}" rev-parse "${AFTER}^{tree}")" = "${EXPECTED_TREE}"
+          test "$(git -C "${repository}" rev-parse "${AFTER}^")" = "${UPSTREAM_SHA}"
+          test -z "$(git -C "${repository}" rev-list --merges "${UPSTREAM_SHA}..${AFTER}")"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git -C "${repository}" push \
+              --force-with-lease="refs/heads/${TARGET_BRANCH}:${TARGET_BEFORE}" \
+              origin "${AFTER}:refs/heads/${TARGET_BRANCH}"
