@@ -1,0 +1,252 @@
+name: Harden rebased overlay style invariants
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-style-hardening-v11-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refactor-overlay-style-hardening-v11
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: d9d36f01c446d30812136250e5ba9fe8a40f1618
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  RESULT_BRANCH: refactor/overlay-style-hardening-v11-20260913
+
+jobs:
+  harden:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact autocorrected candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
+
+      - name: Encode overlay invariants and repair linter source paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} replacement(s), found {count}")
+              file_path.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace_exact(
+              "Library/Homebrew/cleanup.rb",
+              """        preferred_local_kegs = local_kegs_by_full_name.transform_values do |kegs|\n          T.must(kegs.max_by(&:scheme_and_version))\n        end\n""",
+              """        preferred_local_kegs = local_kegs_by_full_name.transform_values do |kegs|\n          kegs.max_by(&:scheme_and_version) ||\n            raise(\"overlay autoremove received an empty local keg set\")\n        end\n""",
+          )
+
+          replace_exact(
+              "Library/Homebrew/diagnostic.rb",
+              """        unless prefix_safe && cellar_safe\n""",
+              """        user_prefix_safe = prefix_safe && cellar_safe\n        unless user_prefix_safe\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/diagnostic.rb",
+              """            remediation: \"Run any brew command to invoke recovery, then inspect the transaction journals if it fails.\",\n""",
+              """            remediation: \"Run any brew command to invoke recovery, then inspect the \" \\\n                         \"transaction journals if it fails.\",\n""",
+          )
+
+          replace_exact(
+              "Library/Homebrew/overlay/core.rb",
+              """        valid_metadata = formula == \"#{formula_name}\\n\" && recorded_version == \"#{version}\\n\" &&\n                         [\"prepared\\n\", \"backed-up\\n\", \"committed\\n\"].include?(state)\n""",
+              """        if state.nil?\n          raise TransactionFailure, \"invalid overlay reinstall metadata: #{@root}\"\n        end\n\n        valid_metadata = formula == \"#{formula_name}\\n\" && recorded_version == \"#{version}\\n\" &&\n                         [\"prepared\\n\", \"backed-up\\n\", \"committed\\n\"].include?(state)\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/overlay/core.rb",
+              """        T.must(state).chomp\n""",
+              """        state.chomp\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/overlay/core.rb",
+              """        fields.each_slice(2) do |relative, target|\n          relative = T.must(relative)\n          target = T.must(target)\n          expected = expected_link_target(relative)\n""",
+              """        fields.each_slice(2) do |relative, target|\n          if relative.nil? || target.nil?\n            raise TransactionFailure, \"invalid overlay view state: #{state}\"\n          end\n\n          expected = expected_link_target(relative)\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/overlay/core.rb",
+              """      return unless valid_formula_name?(T.must(components.first))\n      return if components.length == 2 && !valid_version_name?(T.must(components.last))\n""",
+              """      formula = components.fetch(0)\n      return unless valid_formula_name?(formula)\n      return if components.length == 2 && !valid_version_name?(components.fetch(1))\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/overlay/core.rb",
+              """      T.unsafe(::Formula).clear_cache if defined?(::Formula)\n      T.unsafe(::Keg).clear_cache if defined?(::Keg)\n""",
+              """      ::Formula.clear_cache if defined?(::Formula)\n      ::Keg.clear_cache if defined?(::Keg)\n""",
+          )
+
+          replace_exact(
+              "Library/Homebrew/overlay/install_session.rb",
+              """      sig { returns(String) }\n      def formula_name = T.must(@formula_name)\n\n      sig { returns(String) }\n      def formula_version = T.must(@formula_version)\n\n      sig { returns(String) }\n      def formula_full_name = T.must(@formula_full_name)\n""",
+              """      sig { params(value: T.nilable(String), label: String).returns(String) }\n      def required_session_value(value, label)\n        value || raise(TransactionFailure, \"overlay install session is missing #{label}\")\n      end\n\n      sig { returns(String) }\n      def formula_name = required_session_value(@formula_name, \"formula name\")\n\n      sig { returns(String) }\n      def formula_version = required_session_value(@formula_version, \"formula version\")\n\n      sig { returns(String) }\n      def formula_full_name = required_session_value(@formula_full_name, \"formula full name\")\n""",
+          )
+
+          replace_exact(
+              "Library/Homebrew/test/diagnostic_checks_spec.rb",
+              """    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: Pathname(\"/missing/base\"),\n                                                 base_cellar: Pathname(\"/missing/base/Cellar\"), transactions_dir: HOMEBREW_PREFIX/\"var/homebrew/overlay/transactions\", link_state_file: HOMEBREW_PREFIX/\"var/homebrew/overlay/view.state\")\n""",
+              """    allow(Homebrew::Overlay).to receive_messages(\n      active?:           true,\n      base_prefix:       Pathname(\"/missing/base\"),\n      base_cellar:       Pathname(\"/missing/base/Cellar\"),\n      transactions_dir: HOMEBREW_PREFIX/\"var/homebrew/overlay/transactions\",\n      link_state_file:   HOMEBREW_PREFIX/\"var/homebrew/overlay/view.state\",\n    )\n""",
+          )
+          replace_exact(
+              "Library/Homebrew/test/diagnostic_checks_spec.rb",
+              """    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: base, base_cellar: base_cellar,\n                                                 transactions_dir: HOMEBREW_PREFIX/\"var/homebrew/overlay/transactions\", link_state_file: HOMEBREW_PREFIX/\"var/homebrew/overlay/view.state\", base_generation_drift: [stale_keg])\n""",
+              """    allow(Homebrew::Overlay).to receive_messages(\n      active?:              true,\n      base_prefix:          base,\n      base_cellar:          base_cellar,\n      transactions_dir:    HOMEBREW_PREFIX/\"var/homebrew/overlay/transactions\",\n      link_state_file:      HOMEBREW_PREFIX/\"var/homebrew/overlay/view.state\",\n      base_generation_drift: [stale_keg],\n    )\n""",
+          )
+
+          core_spec = Path("Library/Homebrew/test/overlay/core_spec.rb")
+          core_text = core_spec.read_text(encoding="utf-8")
+          helper_anchor = '  it "fsyncs each parent after publishing a new owned directory entry" do\n'
+          if core_text.count(helper_anchor) != 1:
+              raise SystemExit("core_spec.rb: transaction helper anchor changed")
+          helper = """  def begin_transaction!\n    described_class.begin_formula_transaction(formula, base_generation:) ||\n      raise(\"expected an overlay formula transaction\")\n  end\n\n"""
+          core_text = core_text.replace(helper_anchor, helper + helper_anchor, 1)
+          old_transaction = "transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))"
+          if core_text.count(old_transaction) != 9:
+              raise SystemExit(f"core_spec.rb: expected 9 transaction assertions, found {core_text.count(old_transaction)}")
+          core_text = core_text.replace(old_transaction, "transaction = begin_transaction!")
+          core_spec.write_text(core_text, encoding="utf-8")
+
+          reinstall_spec = Path("Library/Homebrew/test/overlay/reinstall_session_spec.rb")
+          reinstall_text = reinstall_spec.read_text(encoding="utf-8")
+          reinstall_anchor = '  it "does not intercept native or empty reinstall targets" do\n'
+          if reinstall_text.count(reinstall_anchor) != 1:
+              raise SystemExit("reinstall_session_spec.rb: session helper anchor changed")
+          reinstall_helper = """  def build_session(link_keg:, verbose:)\n    described_class.build(keg, link_keg:, verbose:) ||\n      raise(\"expected an overlay reinstall session\")\n  end\n\n"""
+          reinstall_text = reinstall_text.replace(reinstall_anchor, reinstall_helper + reinstall_anchor, 1)
+          replacements = {
+              "session = T.must(described_class.build(keg, link_keg: true, verbose: true))":
+                  ("session = build_session(link_keg: true, verbose: true)", 3),
+              "session = T.must(described_class.build(keg, link_keg: true, verbose: false))":
+                  ("session = build_session(link_keg: true, verbose: false)", 1),
+              "session = T.must(described_class.build(keg, link_keg: false, verbose: false))":
+                  ("session = build_session(link_keg: false, verbose: false)", 1),
+          }
+          for old, (new, expected) in replacements.items():
+              count = reinstall_text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"reinstall_session_spec.rb: expected {expected} occurrence(s), found {count}: {old}"
+                  )
+              reinstall_text = reinstall_text.replace(old, new)
+          reinstall_spec.write_text(reinstall_text, encoding="utf-8")
+
+          support_dir = Path("Library/Homebrew/test/support")
+          old_overlay_source = "# shellcheck source=../../utils/overlay.sh"
+          new_overlay_source = "# shellcheck source=Homebrew/utils/overlay.sh"
+          old_shellenv_source = "# shellcheck source=../../cmd/shellenv.sh"
+          new_shellenv_source = "# shellcheck source=Homebrew/cmd/shellenv.sh"
+          overlay_replacements = 0
+          shellenv_replacements = 0
+          for script in sorted(support_dir.glob("overlay_*.sh")):
+              text = script.read_text(encoding="utf-8")
+              overlay_replacements += text.count(old_overlay_source)
+              shellenv_replacements += text.count(old_shellenv_source)
+              text = text.replace(old_overlay_source, new_overlay_source)
+              text = text.replace(old_shellenv_source, new_shellenv_source)
+              script.write_text(text, encoding="utf-8")
+          if overlay_replacements == 0 or shellenv_replacements == 0:
+              raise SystemExit(
+                  "expected both overlay and shellenv ShellCheck source-path repairs "
+                  f"(overlay={overlay_replacements}, shellenv={shellenv_replacements})"
+              )
+          remaining = []
+          for script in sorted(support_dir.glob("overlay_*.sh")):
+              text = script.read_text(encoding="utf-8")
+              if old_overlay_source in text or old_shellenv_source in text:
+                  remaining.append(str(script))
+          if remaining:
+              raise SystemExit(f"stale ShellCheck source paths remain: {remaining}")
+          print(
+              "Repaired ShellCheck source directives: "
+              f"overlay={overlay_replacements}, shellenv={shellenv_replacements}"
+          )
+          PY
+
+          mapfile -d '' ruby_files < <(
+            git diff --name-only -z --diff-filter=ACMR \
+              upstream/main...HEAD -- '*.rb' '*.rbi'
+          )
+          set +e
+          bin/brew style --fix --display-cop-names "${ruby_files[@]}"
+          autocorrect_status=$?
+          set -e
+          printf 'Post-hardening style autofix exit status: %s\n' "${autocorrect_status}"
+
+          git diff --check
+          for ruby_file in "${ruby_files[@]}"; do
+            [[ "${ruby_file}" == *.rb ]] || continue
+            ruby -c "${ruby_file}" >/dev/null
+          done
+          while IFS= read -r shell_file; do
+            [[ -n "${shell_file}" ]] || continue
+            bash -n "${shell_file}"
+          done < <(git diff --name-only upstream/main...HEAD -- '*.sh' | sort)
+          python3 Library/Homebrew/test/support/overlay_style_delta_check_test.py
+
+      - name: Commit and publish the hardened candidate
+        id: result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add -u
+          if git diff --cached --quiet; then
+            echo "Invariant hardening produced no tracked changes." >&2
+            exit 1
+          fi
+          git commit -m "Harden overlay invariants after upstream rebase"
+
+          after="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${RESULT_BRANCH}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing result branch ${RESULT_BRANCH}." >&2
+            exit 1
+          fi
+          git push origin "${after}:refs/heads/${RESULT_BRANCH}"
+
+      - name: Re-run the fail-closed changed-line style gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Report the result identity
+        if: always()
+        shell: bash
+        env:
+          AFTER: ${{ steps.result.outputs.after }}
+        run: |
+          printf 'Hardened candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Result branch: %s\n' "${RESULT_BRANCH}"
