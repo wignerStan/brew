@@ -271,6 +271,7 @@ RSpec.describe InstalledDependents do
 
     specify "a local replacement can be removed when an administrator fallback remains" do
       dependent = setup_test_keg("bar", "1.0") do
+        T.bind(self, T.class_of(Formula))
         depends_on "foo"
       end
       tab_dependencies dependent, [{ "full_name" => "foo", "version" => "1.0" }]
