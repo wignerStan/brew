@@ -47,10 +47,10 @@ export HOMEBREW_OVERLAY_BASE_PREFIX="${base}"
 printf 'formulae=%s ignored_recursive_entries=%s\n' "${formulae}" "${ignored_entries}"
 start_ns="$(date +%s%N)"
 bash "${repo}/Library/Homebrew/utils/overlay.sh" --sync
-first_ns=$(( $(date +%s%N) - start_ns ))
+first_ns=$(($(date +%s%N) - start_ns))
 start_ns="$(date +%s%N)"
 bash "${repo}/Library/Homebrew/utils/overlay.sh" --quick-sync
-second_ns=$(( $(date +%s%N) - start_ns ))
+second_ns=$(($(date +%s%N) - start_ns))
 printf 'first_ms=%s second_unchanged_ms=%s\n' "$((first_ns / 1000000))" "$((second_ns / 1000000))"
 
 test "$(find "${user}/Cellar" -mindepth 1 -maxdepth 1 -type l | wc -l)" -eq "${formulae}"

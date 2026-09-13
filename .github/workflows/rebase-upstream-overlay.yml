@@ -218,9 +218,11 @@ jobs:
           test "$(/usr/bin/git rev-parse HEAD)" = "${AFTER}"
           test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "${EXPECTED_TREE}"
           test "$(/usr/bin/sha256sum "${bundle}" | /usr/bin/awk '{print $1}')" = "${BUNDLE_SHA256}"
-          printf 'sha=%s\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
-          printf 'tree=%s\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
-          printf 'bundle_sha256=%s\n' "${BUNDLE_SHA256}" >>"${GITHUB_OUTPUT}"
+          {
+            printf 'sha=%s\n' "${AFTER}"
+            printf 'tree=%s\n' "${EXPECTED_TREE}"
+            printf 'bundle_sha256=%s\n' "${BUNDLE_SHA256}"
+          } >>"${GITHUB_OUTPUT}"
 
   promote:
     needs: [prepare, validate]
@@ -287,7 +289,7 @@ jobs:
           /usr/bin/git -C "${repository}" config transfer.fsckObjects true
           /usr/bin/git -C "${repository}" config fetch.fsckObjects true
           /usr/bin/git -C "${repository}" remote add origin \
-            https://github.com/${GITHUB_REPOSITORY}.git
+            "https://github.com/${GITHUB_REPOSITORY}.git"
           /usr/bin/git -C "${repository}" remote add upstream \
             https://github.com/Homebrew/brew.git
           test "$(/usr/bin/git -C "${repository}" remote get-url origin)" = \
@@ -322,5 +324,5 @@ jobs:
 
           GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
             /usr/bin/git -C "${repository}" push \
-              --force-with-lease=refs/heads/overlay-store:${BEFORE} \
+              "--force-with-lease=refs/heads/overlay-store:${BEFORE}" \
               origin "${AFTER}:refs/heads/overlay-store"

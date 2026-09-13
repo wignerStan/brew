@@ -56,7 +56,6 @@ activate() {
   export HOMEBREW_OVERLAY_ACTIVE=1
 }
 
-
 # Journal creation is atomic: a hidden pending directory is never interpreted
 # as a visible, corrupt transaction. A live owner preserves it and blocks
 # startup; after the owner exits, recovery removes the pending journal and all
@@ -111,13 +110,12 @@ test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-staging/txn-pending"
 test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-racks/txn-pending"
 test ! -e "${pending_case}/user/Cellar/.homebrew-overlay-failed/txn-pending"
 
-
 # Cleanup first detaches active control roots. A later process treats
 # partially deleted tombstones as deletion-only objects and resumes
 # cleanup without parsing their contents.
 tombstone_case="${work}/cleanup-tombstones"
 make_case "${tombstone_case}"
-mkdir -p   "${tombstone_case}/user/var/homebrew/overlay/transactions/.cleanup-transaction-dead-1111111111111111/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-staging/.cleanup-staging-dead-2222222222222222/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-racks/.cleanup-racks-dead-3333333333333333/partial"   "${tombstone_case}/user/Cellar/.homebrew-overlay-failed/.cleanup-failed-dead-4444444444444444/partial"
+mkdir -p "${tombstone_case}/user/var/homebrew/overlay/transactions/.cleanup-transaction-dead-1111111111111111/partial" "${tombstone_case}/user/Cellar/.homebrew-overlay-staging/.cleanup-staging-dead-2222222222222222/partial" "${tombstone_case}/user/Cellar/.homebrew-overlay-racks/.cleanup-racks-dead-3333333333333333/partial" "${tombstone_case}/user/Cellar/.homebrew-overlay-failed/.cleanup-failed-dead-4444444444444444/partial"
 activate "${tombstone_case}"
 homebrew-overlay-sync --force
 test -z "$(find "${tombstone_case}/user" -name '.cleanup-*' -print -quit)"
@@ -157,7 +155,7 @@ case0="${work}/live-owner"
 make_case "${case0}"
 write_journal "${case0}" txn-live staging
 mkdir -p "${case0}/user/Cellar/.homebrew-overlay-staging/txn-live/foo/2.0" \
-         "${case0}/user/var/homebrew/overlay/transactions/.locks"
+  "${case0}/user/var/homebrew/overlay/transactions/.locks"
 : >"${case0}/user/var/homebrew/overlay/transactions/.locks/txn-live.lock"
 ready="${case0}/owner-ready"
 python3 - "${case0}/user/var/homebrew/overlay/transactions/.locks/txn-live.lock" "${ready}" <<'PY_OWNER' &
@@ -190,7 +188,7 @@ test -d "${case0}/user/var/homebrew/overlay/transactions/txn-live"
 test -d "${case0}/user/Cellar/.homebrew-overlay-staging/txn-live"
 grep -q 'transaction is still active' "${case0}/stderr"
 if HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID=txn-live \
-  homebrew-overlay-sync --force >"${case0}/id.out" 2>"${case0}/id.err"
+   homebrew-overlay-sync --force >"${case0}/id.out" 2>"${case0}/id.err"
 then
   echo "transaction identifier without inherited descriptors unexpectedly synchronized" >&2
   exit 1
@@ -233,7 +231,7 @@ make_case "${case3}"
 write_journal "${case3}" txn-published published
 rm "${case3}/user/Cellar/foo"
 mkdir -p "${case3}/user/Cellar/foo/2.0/bin" \
-         "${case3}/user/Cellar/.homebrew-overlay-racks/txn-published"
+  "${case3}/user/Cellar/.homebrew-overlay-racks/txn-published"
 printf 'local\n' >"${case3}/user/Cellar/foo/2.0/bin/foo"
 printf 'txn-published\n' >"${case3}/user/Cellar/foo/2.0/.brew-overlay-transaction"
 ln -s "${case3}/base/Cellar/foo" \
@@ -252,7 +250,7 @@ make_case "${case4}"
 write_journal "${case4}" txn-recover recovering-previous
 rm "${case4}/user/Cellar/foo"
 mkdir -p "${case4}/user/Cellar/.homebrew-overlay-failed/txn-recover/foo/2.0" \
-         "${case4}/user/Cellar/.homebrew-overlay-racks/txn-recover"
+  "${case4}/user/Cellar/.homebrew-overlay-racks/txn-recover"
 printf 'txn-recover\n' >"${case4}/user/Cellar/.homebrew-overlay-failed/txn-recover/foo/2.0/.brew-overlay-transaction"
 ln -s "${case4}/base/Cellar/foo" \
   "${case4}/user/Cellar/.homebrew-overlay-racks/txn-recover/foo"
@@ -268,7 +266,7 @@ make_case "${case5}"
 write_journal "${case5}" txn-commit committing
 rm "${case5}/user/Cellar/foo"
 mkdir -p "${case5}/user/Cellar/foo/2.0/bin" \
-         "${case5}/user/Cellar/.homebrew-overlay-racks/txn-commit"
+  "${case5}/user/Cellar/.homebrew-overlay-racks/txn-commit"
 printf 'local\n' >"${case5}/user/Cellar/foo/2.0/bin/foo"
 printf 'txn-commit\n' >"${case5}/user/Cellar/foo/2.0/.brew-overlay-transaction"
 cp "${case5}/user/var/homebrew/overlay/transactions/txn-commit/base_generation" \
