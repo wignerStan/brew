@@ -1,0 +1,106 @@
+name: Autocorrect rebased overlay style
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-style-autofix-v10-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refactor-overlay-style-autofix-v10
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: 762c6e8b54a962399cac6f09f50c158788d016cb
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  RESULT_BRANCH: refactor/overlay-style-autofix-v10-20260913
+
+jobs:
+  autocorrect:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact rebased candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify the immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
+
+      - name: Autocorrect changed Ruby files with Homebrew's toolchain
+        id: fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' ruby_files < <(
+            git diff --name-only -z --diff-filter=ACMR \
+              upstream/main...HEAD -- '*.rb' '*.rbi'
+          )
+          test "${#ruby_files[@]}" -gt 0
+
+          set +e
+          bin/brew style --fix --display-cop-names "${ruby_files[@]}"
+          autocorrect_status=$?
+          set -e
+          printf 'Homebrew style autofix exit status: %s\n' "${autocorrect_status}"
+
+          git diff --check
+          for ruby_file in "${ruby_files[@]}"; do
+            [[ "${ruby_file}" == *.rb ]] || continue
+            ruby -c "${ruby_file}" >/dev/null
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add -- "${ruby_files[@]}"
+          if git diff --cached --quiet; then
+            echo "Homebrew's autocorrector produced no tracked changes." >&2
+            exit 1
+          fi
+          git commit -m "Autocorrect overlay style after upstream rebase"
+
+          after="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/${RESULT_BRANCH}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing result branch ${RESULT_BRANCH}." >&2
+            exit 1
+          fi
+          git push origin "${after}:refs/heads/${RESULT_BRANCH}"
+
+      - name: Re-run the fail-closed changed-line style gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Report the result identity
+        if: always()
+        shell: bash
+        env:
+          AFTER: ${{ steps.fix.outputs.after }}
+        run: |
+          printf 'Autocorrected candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Result branch: %s\n' "${RESULT_BRANCH}"
