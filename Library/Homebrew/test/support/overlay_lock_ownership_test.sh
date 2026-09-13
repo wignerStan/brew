@@ -63,7 +63,7 @@ exec 20<>"${mutation_lock}"
 flock -x 20
 printf 'replayable-owner-token-0001\n' >"${mutation_lock}"
 if HOMEBREW_OVERLAY_MUTATION_OWNER='replayable-owner-token-0001' \
-  homebrew-overlay-sync --force >"${case_root}/token.out" 2>"${case_root}/token.err"
+   homebrew-overlay-sync --force >"${case_root}/token.out" 2>"${case_root}/token.err"
 then
   echo 'replayed mutation-owner token unexpectedly synchronized' >&2
   exit 1
@@ -74,7 +74,7 @@ grep -q 'another Homebrew package mutation is still active' "${case_root}/token.
 # not authorize nested synchronization.
 exec 21<>"${mutation_lock}"
 if HOMEBREW_OVERLAY_MUTATION_LOCK_FD=21 \
-  homebrew-overlay-sync --force >"${case_root}/reopen.out" 2>"${case_root}/reopen.err"
+   homebrew-overlay-sync --force >"${case_root}/reopen.out" 2>"${case_root}/reopen.err"
 then
   echo 'reopened mutation descriptor unexpectedly synchronized' >&2
   exit 1
@@ -88,15 +88,18 @@ HOMEBREW_OVERLAY_MUTATION_LOCK_FD=20 homebrew-overlay-sync --force
 txn='txn-live-owner'
 write_journal "${case_root}" "${txn}"
 owner_lock="${case_root}/user/var/homebrew/overlay/transactions/.locks/${txn}.lock"
-(umask 077; : >"${owner_lock}")
+(
+  umask 077
+  : >"${owner_lock}"
+)
 exec 22<>"${owner_lock}"
 flock -x 22
 
 # A transaction identifier is not authorization without both live inherited
 # descriptors.
 if HOMEBREW_OVERLAY_MUTATION_LOCK_FD=20 \
-  HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
-  homebrew-overlay-sync --force >"${case_root}/id-only.out" 2>"${case_root}/id-only.err"
+   HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
+   homebrew-overlay-sync --force >"${case_root}/id-only.out" 2>"${case_root}/id-only.err"
 then
   echo 'transaction identifier without owner descriptor unexpectedly synchronized' >&2
   exit 1
@@ -105,9 +108,9 @@ grep -q 'incomplete inherited overlay transaction ownership' "${case_root}/id-on
 
 exec 23<>"${owner_lock}"
 if HOMEBREW_OVERLAY_MUTATION_LOCK_FD=20 \
-  HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
-  HOMEBREW_OVERLAY_OWNER_TRANSACTION_LOCK_FD=23 \
-  homebrew-overlay-sync --force >"${case_root}/txn-reopen.out" 2>"${case_root}/txn-reopen.err"
+   HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
+   HOMEBREW_OVERLAY_OWNER_TRANSACTION_LOCK_FD=23 \
+   homebrew-overlay-sync --force >"${case_root}/txn-reopen.out" 2>"${case_root}/txn-reopen.err"
 then
   echo 'reopened transaction descriptor unexpectedly synchronized' >&2
   exit 1
@@ -118,8 +121,8 @@ exec 23>&-
 # Both original descriptors permit the owner to synchronize without recovering
 # its own still-live journal.
 HOMEBREW_OVERLAY_MUTATION_LOCK_FD=20 \
-HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
-HOMEBREW_OVERLAY_OWNER_TRANSACTION_LOCK_FD=22 \
+  HOMEBREW_OVERLAY_OWNER_TRANSACTION_ID="${txn}" \
+  HOMEBREW_OVERLAY_OWNER_TRANSACTION_LOCK_FD=22 \
   homebrew-overlay-sync --force
 test -d "${case_root}/user/var/homebrew/overlay/transactions/${txn}"
 test -d "${case_root}/user/Cellar/.homebrew-overlay-staging/${txn}"

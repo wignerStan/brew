@@ -117,8 +117,8 @@ fi
 grep -q 'administrator Homebrew prefix is being mutated' "${case_base_live}/sync.err"
 test ! -e "${case_base_live}/user/Cellar/transient"
 if HOMEBREW_OVERLAY_BASE_PREFIX="${case_base_live}/base" \
-  bash "${repo}/Library/Homebrew/utils/overlay.sh" --base-generation \
-  >"${case_base_live}/generation.out" 2>"${case_base_live}/generation.err"
+   bash "${repo}/Library/Homebrew/utils/overlay.sh" --base-generation \
+   >"${case_base_live}/generation.out" 2>"${case_base_live}/generation.err"
 then
   echo 'base-generation read crossed a live administrator mutation' >&2
   exit 1
