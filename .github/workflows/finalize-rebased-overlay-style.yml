@@ -121,7 +121,7 @@ jobs:
               replacement.extend(f"  {argument}" for argument in arguments)
               replacement.extend([
                   ")",
-                  f'python3 - "${{python_sources[@]}}" {marker}',
+                  'python3 - "' + "$" + '{python_sources[@]}" ' + marker,
               ])
               write_lines(path, lines[:start] + replacement + lines[end + 1:])
 
