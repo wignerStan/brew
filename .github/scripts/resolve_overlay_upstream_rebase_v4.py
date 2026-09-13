@@ -56,6 +56,9 @@ def install_formula_installer_resolver(base: ModuleType) -> None:
         if "add_build_sandbox_rules" in ours and \
            "@overlay_install_session.apply_build_sandbox_rules" in theirs:
             return ours
+        if "Homebrew::PackageManagerCache.paths" in ours and \
+           "sandbox.allow_write_log(formula)" in theirs:
+            return ours
         base.fail(
             "formula_installer.rb: unrecognized conflict "
             f"{index + 1}\n--- upstream ---\n{ours}\n--- overlay ---\n{theirs}"
