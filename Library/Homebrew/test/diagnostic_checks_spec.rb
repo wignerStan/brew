@@ -257,14 +257,11 @@ RSpec.describe Homebrew::Diagnostic::Checks do
   end
 
   specify "#check_overlay_configuration reports an unavailable administrator base" do
-    allow(Homebrew::Overlay).to receive(:active?).and_return(true)
-    allow(Homebrew::Overlay).to receive(:base_prefix).and_return(Pathname("/missing/base"))
-    allow(Homebrew::Overlay).to receive(:base_cellar).and_return(Pathname("/missing/base/Cellar"))
-    allow(Homebrew::Overlay).to receive(:transactions_dir).and_return(HOMEBREW_PREFIX/"var/homebrew/overlay/transactions")
-    allow(Homebrew::Overlay).to receive(:link_state_file).and_return(HOMEBREW_PREFIX/"var/homebrew/overlay/view.state")
+    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: Pathname("/missing/base"),
+                                                 base_cellar: Pathname("/missing/base/Cellar"), transactions_dir: HOMEBREW_PREFIX/"var/homebrew/overlay/transactions", link_state_file: HOMEBREW_PREFIX/"var/homebrew/overlay/view.state")
 
     findings = Array(checks.check_overlay_configuration)
-    expect(findings.map(&:to_s).join("\n")).to include("administrator Homebrew base is unavailable")
+    expect(findings.join("\n")).to include("administrator Homebrew base is unavailable")
   end
 
   specify "#check_overlay_configuration reports local formulae built against an older base" do
@@ -273,15 +270,11 @@ RSpec.describe Homebrew::Diagnostic::Checks do
     base_cellar.mkpath
     stale_keg = HOMEBREW_CELLAR/"foo/1.0"
 
-    allow(Homebrew::Overlay).to receive(:active?).and_return(true)
-    allow(Homebrew::Overlay).to receive(:base_prefix).and_return(base)
-    allow(Homebrew::Overlay).to receive(:base_cellar).and_return(base_cellar)
-    allow(Homebrew::Overlay).to receive(:transactions_dir).and_return(HOMEBREW_PREFIX/"var/homebrew/overlay/transactions")
-    allow(Homebrew::Overlay).to receive(:link_state_file).and_return(HOMEBREW_PREFIX/"var/homebrew/overlay/view.state")
-    allow(Homebrew::Overlay).to receive(:base_generation_drift).and_return([stale_keg])
+    allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: base, base_cellar: base_cellar,
+                                                 transactions_dir: HOMEBREW_PREFIX/"var/homebrew/overlay/transactions", link_state_file: HOMEBREW_PREFIX/"var/homebrew/overlay/view.state", base_generation_drift: [stale_keg])
 
     findings = Array(checks.check_overlay_configuration)
-    message = findings.map(&:to_s).join("\n")
+    message = findings.join("\n")
     expect(message).to include("different administrator base generation", stale_keg.to_s)
   end
 
