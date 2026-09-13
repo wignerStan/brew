@@ -121,14 +121,19 @@ module Homebrew
 
       private
 
-      sig { returns(String) }
-      def formula_name = T.must(@formula_name)
+      sig { params(value: T.nilable(String), label: String).returns(String) }
+      def required_session_value(value, label)
+        value || raise(TransactionFailure, "overlay install session is missing #{label}")
+      end
 
       sig { returns(String) }
-      def formula_version = T.must(@formula_version)
+      def formula_name = required_session_value(@formula_name, "formula name")
 
       sig { returns(String) }
-      def formula_full_name = T.must(@formula_full_name)
+      def formula_version = required_session_value(@formula_version, "formula version")
+
+      sig { returns(String) }
+      def formula_full_name = required_session_value(@formula_full_name, "formula full name")
 
       sig { void }
       def verify_base_generation!
