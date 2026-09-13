@@ -46,7 +46,8 @@ jobs:
           test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
           test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
 
-      - name: Repair workflow ShellCheck findings and shell formatting
+      - name: Repair workflow ShellCheck findings and all changed shell formatting
+        id: repair
         shell: bash
         run: |
           set -euo pipefail
@@ -83,10 +84,19 @@ jobs:
           path.write_text(text, encoding="utf-8")
           PY
 
-          bin/brew style --fix --display-cop-names \
-            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
-          bash -n Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          mapfile -d '' shell_files < <(
+            git diff --name-only -z --diff-filter=ACMR \
+              upstream/main...HEAD -- '*.sh'
+          )
+          test "${#shell_files[@]}" -gt 0
+          bin/brew style --fix --display-cop-names "${shell_files[@]}"
+
+          for shell_file in "${shell_files[@]}"; do
+            bash -n "${shell_file}"
+          done
           git diff --check
+          printf 'shell_file=%s\n' "${shell_files[@]}"
+          printf 'shell_count=%s\n' "${#shell_files[@]}" >>"${GITHUB_OUTPUT}"
 
       - name: Commit the final style repair
         id: commit
@@ -97,9 +107,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config commit.gpgsign false
           git config core.hooksPath /dev/null
-          git add -- \
-            .github/workflows/rebase-upstream-overlay.yml \
-            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          git add -u
           if git diff --cached --quiet; then
             echo "Final style repair produced no tracked changes." >&2
             exit 1
@@ -133,6 +141,8 @@ jobs:
         shell: bash
         env:
           AFTER: ${{ steps.commit.outputs.after }}
+          SHELL_COUNT: ${{ steps.repair.outputs.shell_count }}
         run: |
           printf 'Style-clean candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Changed shell files formatted: %s\n' "${SHELL_COUNT:-unknown}"
           printf 'Result branch: %s\n' "${RESULT_BRANCH}"
