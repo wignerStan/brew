@@ -10,6 +10,13 @@
         formula_installer="${repo}/Library/Homebrew/formula_installer.rb"
         reinstall_adapter="${repo}/Library/Homebrew/reinstall/reinstall.rb"
 
+        if grep -R -n -F '.resolved_path' "${ruby_impl}" |
+           grep -v -F 'Utils::Path.resolved_path'
+        then
+          echo "Error: overlay implementation uses deprecated Pathname#resolved_path" >&2
+          exit 1
+        fi
+
         [[ "$(wc -l <"${ruby_loader}")" -le 15 ]] || {
           echo "Error: public Ruby overlay loader accumulated implementation" >&2
           exit 1
