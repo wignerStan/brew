@@ -53,152 +53,184 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
-              file_path = Path(path)
-              text = file_path.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != expected:
+          def read_lines(path: str) -> list[str]:
+              return Path(path).read_text(encoding="utf-8").splitlines()
+
+          def write_lines(path: str, lines: list[str]) -> None:
+              Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          def replace_lines(path: str, old: list[str], new: list[str]) -> None:
+              lines = read_lines(path)
+              matches = [
+                  index
+                  for index in range(len(lines) - len(old) + 1)
+                  if lines[index:index + len(old)] == old
+              ]
+              if len(matches) != 1:
                   raise SystemExit(
-                      f"{path}: expected {expected} replacement(s), found {count}: {old!r}"
+                      f"{path}: expected one structural match, found {len(matches)}: {old!r}"
                   )
-              file_path.write_text(text.replace(old, new), encoding="utf-8")
+              start = matches[0]
+              write_lines(path, lines[:start] + new + lines[start + len(old):])
+
+          def replace_line(path: str, old: str, new: str) -> None:
+              lines = read_lines(path)
+              matches = [index for index, line in enumerate(lines) if line == old]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"{path}: expected one line match, found {len(matches)}: {old!r}"
+                  )
+              lines[matches[0]] = new
+              write_lines(path, lines)
 
           core = "Library/Homebrew/overlay/core.rb"
-          replace_exact(
+          replace_lines(
               core,
-              'require "securerandom"\nrequire "utils/path"\n',
-              'require "securerandom"\nrequire "system_command"\nrequire "utils/path"\n',
+              ['require "securerandom"', 'require "utils/path"'],
+              ['require "securerandom"', 'require "system_command"', 'require "utils/path"'],
           )
-          replace_exact(
+          replace_line(
               core,
-              '        Homebrew.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s\n',
-              '        SystemCommand.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s\n',
+              '        Homebrew.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s',
+              '        SystemCommand.safe_system mv, "--exchange", "--no-target-directory", left.to_s, right.to_s',
           )
-          replace_exact(
+          replace_lines(
               core,
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context
-      Homebrew.safe_system environment, "/bin/bash", script,
-                           "--mark-generation-dirty", HOMEBREW_PREFIX.to_s, **options
-''',
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, file_descriptors = mutation_process_context
-      run_overlay_command!(
-        environment,
-        "/bin/bash",
-        script,
-        "--mark-generation-dirty",
-        HOMEBREW_PREFIX.to_s,
-        file_descriptors:,
-      )
-''',
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, options = mutation_process_context',
+                  '      Homebrew.safe_system environment, "/bin/bash", script,',
+                  '                           "--mark-generation-dirty", HOMEBREW_PREFIX.to_s, **options',
+              ],
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, file_descriptors = mutation_process_context',
+                  '      run_overlay_command!(',
+                  '        environment,',
+                  '        "/bin/bash",',
+                  '        script,',
+                  '        "--mark-generation-dirty",',
+                  '        HOMEBREW_PREFIX.to_s,',
+                  '        file_descriptors:,',
+                  '      )',
+              ],
           )
-          replace_exact(
+          replace_lines(
               core,
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context(finalize: true)
-      Homebrew.safe_system environment, "/bin/bash", script,
-                           "--bump-generation", HOMEBREW_PREFIX.to_s, **options
-''',
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, file_descriptors = mutation_process_context(finalize: true)
-      run_overlay_command!(
-        environment,
-        "/bin/bash",
-        script,
-        "--bump-generation",
-        HOMEBREW_PREFIX.to_s,
-        file_descriptors:,
-      )
-''',
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, options = mutation_process_context(finalize: true)',
+                  '      Homebrew.safe_system environment, "/bin/bash", script,',
+                  '                           "--bump-generation", HOMEBREW_PREFIX.to_s, **options',
+              ],
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, file_descriptors = mutation_process_context(finalize: true)',
+                  '      run_overlay_command!(',
+                  '        environment,',
+                  '        "/bin/bash",',
+                  '        script,',
+                  '        "--bump-generation",',
+                  '        HOMEBREW_PREFIX.to_s,',
+                  '        file_descriptors:,',
+                  '      )',
+              ],
           )
-          replace_exact(
+          replace_lines(
               core,
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, options = mutation_process_context(finalize: mutation, owner_transaction:)
-      Homebrew.safe_system environment, "/bin/bash", script, "--sync", **options
-''',
-              '''      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"
-      environment, file_descriptors = mutation_process_context(finalize: mutation, owner_transaction:)
-      run_overlay_command!(environment, "/bin/bash", script, "--sync", file_descriptors:)
-''',
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, options = mutation_process_context(finalize: mutation, owner_transaction:)',
+                  '      Homebrew.safe_system environment, "/bin/bash", script, "--sync", **options',
+              ],
+              [
+                  '      script = HOMEBREW_LIBRARY_PATH/"utils/overlay.sh"',
+                  '      environment, file_descriptors = mutation_process_context(finalize: mutation, owner_transaction:)',
+                  '      run_overlay_command!(environment, "/bin/bash", script, "--sync", file_descriptors:)',
+              ],
           )
 
-          context_anchor = '''    sig {
-      params(
-        finalize:          T::Boolean,
-        owner_transaction: T.nilable(FormulaTransaction),
-      ).returns([T::Hash[String, T.nilable(String)], T::Hash[T.untyped, T.untyped]])
-    }
-    def self.mutation_process_context(finalize: false, owner_transaction: nil)
-      environment = T.let({}, T::Hash[String, T.nilable(String)])
-      options = T.let({}, T::Hash[T.untyped, T.untyped])
-'''
-          helper = '''    sig {
-      params(
-        environment:      T::Hash[String, String],
-        executable:       T.any(String, Pathname),
-        arguments:        T.any(String, Pathname),
-        file_descriptors: T::Hash[Integer, File],
-      ).void
-    }
-    def self.run_overlay_command!(environment, executable, *arguments, file_descriptors:)
-      command = [executable, *arguments]
-      pid = Process.spawn(
-        environment,
-        executable.to_s,
-        *arguments.map(&:to_s),
-        file_descriptors,
-      )
-      _, status = Process.wait2(pid)
-      return if status.success?
-
-      failure = status.signaled? ? "signal #{status.termsig}" : "status #{status.exitstatus}"
-      raise TransactionFailure, "overlay helper command failed with #{failure}: #{command.join(" ")}"
-    rescue SystemCallError => e
-      raise TransactionFailure, "overlay helper command failed: #{e.message}"
-    end
-    private_class_method :run_overlay_command!
-
-    sig {
-      params(
-        finalize:          T::Boolean,
-        owner_transaction: T.nilable(FormulaTransaction),
-      ).returns([T::Hash[String, String], T::Hash[Integer, File]])
-    }
-    def self.mutation_process_context(finalize: false, owner_transaction: nil)
-      environment = T.let({}, T::Hash[String, String])
-      file_descriptors = T.let({}, T::Hash[Integer, File])
-'''
-          replace_exact(core, context_anchor, helper)
-          replace_exact(
+          replace_lines(
               core,
-              "        options[MUTATION_LOCK_DESCRIPTOR] = mutation_lock\n",
-              "        file_descriptors[MUTATION_LOCK_DESCRIPTOR] = mutation_lock\n",
+              [
+                  '    sig {',
+                  '      params(',
+                  '        finalize:          T::Boolean,',
+                  '        owner_transaction: T.nilable(FormulaTransaction),',
+                  '      ).returns([T::Hash[String, T.nilable(String)], T::Hash[T.untyped, T.untyped]])',
+                  '    }',
+                  '    def self.mutation_process_context(finalize: false, owner_transaction: nil)',
+                  '      environment = T.let({}, T::Hash[String, T.nilable(String)])',
+                  '      options = T.let({}, T::Hash[T.untyped, T.untyped])',
+              ],
+              [
+                  '    sig {',
+                  '      params(',
+                  '        environment:      T::Hash[String, String],',
+                  '        executable:       T.any(String, Pathname),',
+                  '        arguments:        T.any(String, Pathname),',
+                  '        file_descriptors: T::Hash[Integer, File],',
+                  '      ).void',
+                  '    }',
+                  '    def self.run_overlay_command!(environment, executable, *arguments, file_descriptors:)',
+                  '      command = [executable, *arguments]',
+                  '      pid = Process.spawn(',
+                  '        environment,',
+                  '        executable.to_s,',
+                  '        *arguments.map(&:to_s),',
+                  '        file_descriptors,',
+                  '      )',
+                  '      _, status = Process.wait2(pid)',
+                  '      return if status.success?',
+                  '',
+                  '      failure = status.signaled? ? "signal #{status.termsig}" : "status #{status.exitstatus}"',
+                  '      raise TransactionFailure, "overlay helper command failed with #{failure}: #{command.join(" ")}"',
+                  '    rescue SystemCallError => e',
+                  '      raise TransactionFailure, "overlay helper command failed: #{e.message}"',
+                  '    end',
+                  '    private_class_method :run_overlay_command!',
+                  '',
+                  '    sig {',
+                  '      params(',
+                  '        finalize:          T::Boolean,',
+                  '        owner_transaction: T.nilable(FormulaTransaction),',
+                  '      ).returns([T::Hash[String, String], T::Hash[Integer, File]])',
+                  '    }',
+                  '    def self.mutation_process_context(finalize: false, owner_transaction: nil)',
+                  '      environment = T.let({}, T::Hash[String, String])',
+                  '      file_descriptors = T.let({}, T::Hash[Integer, File])',
+              ],
           )
-          replace_exact(
+          replace_line(
               core,
-              "        options[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock\n",
-              "        file_descriptors[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock\n",
+              '        options[MUTATION_LOCK_DESCRIPTOR] = mutation_lock',
+              '        file_descriptors[MUTATION_LOCK_DESCRIPTOR] = mutation_lock',
           )
-          replace_exact(
+          replace_line(
               core,
-              "      [environment, options]\n",
-              "      [environment, file_descriptors]\n",
+              '        options[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock',
+              '        file_descriptors[TRANSACTION_LOCK_DESCRIPTOR] = owner_transaction.owner_lock',
+          )
+          replace_line(
+              core,
+              '      [environment, options]',
+              '      [environment, file_descriptors]',
           )
 
           spec = "Library/Homebrew/test/installed_dependents_spec.rb"
-          replace_exact(
+          replace_lines(
               spec,
-              '''      dependent = setup_test_keg("bar", "1.0") do
-        depends_on "foo"
-      end
-''',
-              '''      dependent = setup_test_keg("bar", "1.0") do
-        T.bind(self, T.class_of(Formula))
-        depends_on "foo"
-      end
-''',
+              [
+                  '      dependent = setup_test_keg("bar", "1.0") do',
+                  '        depends_on "foo"',
+                  '      end',
+              ],
+              [
+                  '      dependent = setup_test_keg("bar", "1.0") do',
+                  '        T.bind(self, T.class_of(Formula))',
+                  '        depends_on "foo"',
+                  '      end',
+              ],
           )
           PY
 
