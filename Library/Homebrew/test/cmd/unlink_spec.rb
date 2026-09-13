@@ -33,6 +33,17 @@ RSpec.describe Homebrew::Cmd::UnlinkCmd do
     expect(binary).to be_a_symlink
   end
 
+  it "rejects unlink before side effects when an administrator fallback exists" do
+    keg = instance_double(Keg, name: "foo")
+    cmd = described_class.new(["foo"])
+    allow(cmd.args.named).to receive(:to_kegs_to_casks).and_return([[keg], []])
+    allow(Homebrew::Overlay).to receive(:base_formula_available?).with("foo").and_return(true)
+    expect(Homebrew::Unlink).not_to receive(:unlink)
+    expect(cmd).to receive(:odie).with(/unsupported.*administrator-base fallback/m).and_raise(RuntimeError)
+
+    expect { cmd.run }.to raise_error(RuntimeError)
+  end
+
   it "unlinks a Formula", :integration_test do
     setup_test_formula "testball", tab_attributes: { installed_on_request: true }
     formula_prefix = Formula["testball"].prefix

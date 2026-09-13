@@ -4,6 +4,7 @@
 require "abstract_subcommand"
 require "bundle/extensions/extension"
 require "cleanup"
+require "overlay"
 
 require "utils/formatter"
 require "utils"
@@ -276,7 +277,15 @@ module Homebrew
             Homebrew::Bundle::Brew.formula_in_array?(f[:full_name], kept_formulae)
           end
 
-          # Don't try to uninstall formulae with keepme references
+          # Administrator-only formulae are inherited package view entries,
+          # not user-owned cleanup candidates.
+          current_formulae.reject! do |f|
+            Homebrew::Overlay.inherited_only_formula?(Formula[f[:full_name]])
+          rescue FormulaUnavailableError
+            false
+          end
+
+          # Don't try to uninstall formulae with keepme references.
           current_formulae.reject! do |f|
             Formula[f[:full_name]].installed_kegs.any? do |keg|
               keg.keepme_refs.present?

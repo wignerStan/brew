@@ -70,4 +70,48 @@ RSpec.describe Homebrew::Uninstall do
       expect(Homebrew).not_to have_failed
     end
   end
+
+  describe "::uninstall_kegs with a native overlay" do
+    let(:local_keg_path) { dependency.rack/"2" }
+    let(:inherited_keg_path) { HOMEBREW_PREFIX/"base/Cellar/dependency/1" }
+    let(:local_keg) { instance_double(Keg, to_path: local_keg_path) }
+    let(:inherited_keg) { instance_double(Keg, to_path: inherited_keg_path) }
+
+    before do
+      allow(Homebrew::Overlay).to receive_messages(active?: true, base_prefix: HOMEBREW_PREFIX/"base")
+      allow(Homebrew::Overlay).to receive(:inherited_keg?) do |path|
+        Pathname(path) == inherited_keg.to_path
+      end
+      allow(described_class).to receive(:handle_unsatisfied_dependents)
+      allow(described_class).to receive(:rm_pin)
+    end
+
+    it "removes only private kegs from a mixed rack with --force" do
+      expect(local_keg).to receive(:unlink)
+      expect(local_keg).to receive(:uninstall)
+      expect(inherited_keg).not_to receive(:unlink)
+      expect(inherited_keg).not_to receive(:uninstall)
+
+      described_class.uninstall_kegs(
+        { dependency.rack => [local_keg, inherited_keg] },
+        force:               true,
+        ignore_dependencies: true,
+      )
+    end
+
+    it "rejects an inherited-only rack with --force" do
+      expect(inherited_keg).not_to receive(:unlink)
+      expect(inherited_keg).not_to receive(:uninstall)
+
+      expect do
+        described_class.uninstall_kegs(
+          { dependency.rack => [inherited_keg] },
+          force:               true,
+          ignore_dependencies: true,
+        )
+      end.to output(/cannot be modified from the user prefix/).to_stderr
+
+      expect(Homebrew).to have_failed
+    end
+  end
 end
