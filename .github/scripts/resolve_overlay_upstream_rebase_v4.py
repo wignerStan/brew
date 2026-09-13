@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the v4 FormulaInstaller reconciliation, then run the strict base resolver."""
+"""Apply v4 semantic reconciliations, then run the strict base resolver."""
 
 from __future__ import annotations
 
@@ -105,11 +105,41 @@ def install_formula_installer_resolver(base: ModuleType) -> None:
     base.resolve_formula_installer = resolve_formula_installer
 
 
+def install_test_resolver(base: ModuleType) -> None:
+    def resolve_tests() -> None:
+        base.resolve_conflicts(
+            "Library/Homebrew/test/cmd/bundle/cleanup_subcommand_spec.rb",
+            1,
+            lambda _i, ours, _theirs: ours,
+        )
+        base.resolve_conflicts(
+            "Library/Homebrew/test/cmd/postinstall_spec.rb",
+            1,
+            lambda _i, ours, theirs: ours.rstrip("\n") + "\n\n" + theirs,
+        )
+        unlink_path = "Library/Homebrew/test/cmd/unlink_spec.rb"
+        text = base.resolve_conflicts(
+            unlink_path,
+            1,
+            lambda _i, ours, theirs: ours.rstrip("\n") + "\n\n" + theirs,
+        )
+        text = base.replace_once(
+            text,
+            "    allow(cmd.args.named).to receive(:to_default_kegs).and_return([keg])\n",
+            "    allow(cmd.args.named).to receive(:to_kegs_to_casks).and_return([[keg], []])\n",
+            label=f"{unlink_path} resolver mock",
+        )
+        Path(unlink_path).write_text(text, encoding="utf-8")
+
+    base.resolve_tests = resolve_tests
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {Path(sys.argv[0]).name} BASE_RESOLVER")
     base = load_base(Path(sys.argv[1]))
     install_formula_installer_resolver(base)
+    install_test_resolver(base)
     base.main()
 
 
