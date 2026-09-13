@@ -55,26 +55,29 @@ jobs:
 
           path = Path(".github/workflows/rebase-upstream-overlay.yml")
           text = path.read_text(encoding="utf-8")
-          replacements = {
-              """          printf 'sha=%s\\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
-          printf 'tree=%s\\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
-          printf 'bundle_sha256=%s\\n' "${BUNDLE_SHA256}" >>"${GITHUB_OUTPUT}"
-""": """          {
-            printf 'sha=%s\\n' "${AFTER}"
-            printf 'tree=%s\\n' "${EXPECTED_TREE}"
-            printf 'bundle_sha256=%s\\n' "${BUNDLE_SHA256}"
-          } >>"${GITHUB_OUTPUT}"
-""",
-              """          /usr/bin/git -C "${repository}" remote add origin \\
-            https://github.com/${GITHUB_REPOSITORY}.git
-""": """          /usr/bin/git -C "${repository}" remote add origin \\
-            "https://github.com/${GITHUB_REPOSITORY}.git"
-""",
-              """              --force-with-lease=refs/heads/overlay-store:${BEFORE} \\
-""": """              "--force-with-lease=refs/heads/overlay-store:${BEFORE}" \\
-""",
-          }
-          for old, new in replacements.items():
+          replacements = [
+              (
+                  "          printf 'sha=%s\\n' \"${AFTER}\" >>\"${GITHUB_OUTPUT}\"\n"
+                  "          printf 'tree=%s\\n' \"${EXPECTED_TREE}\" >>\"${GITHUB_OUTPUT}\"\n"
+                  "          printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\" >>\"${GITHUB_OUTPUT}\"\n",
+                  "          {\n"
+                  "            printf 'sha=%s\\n' \"${AFTER}\"\n"
+                  "            printf 'tree=%s\\n' \"${EXPECTED_TREE}\"\n"
+                  "            printf 'bundle_sha256=%s\\n' \"${BUNDLE_SHA256}\"\n"
+                  "          } >>\"${GITHUB_OUTPUT}\"\n",
+              ),
+              (
+                  "          /usr/bin/git -C \"${repository}\" remote add origin \\\\\n"
+                  "            https://github.com/${GITHUB_REPOSITORY}.git\n",
+                  "          /usr/bin/git -C \"${repository}\" remote add origin \\\\\n"
+                  "            \"https://github.com/${GITHUB_REPOSITORY}.git\"\n",
+              ),
+              (
+                  "              --force-with-lease=refs/heads/overlay-store:${BEFORE} \\\\\n",
+                  "              \"--force-with-lease=refs/heads/overlay-store:${BEFORE}\" \\\\\n",
+              ),
+          ]
+          for old, new in replacements:
               count = text.count(old)
               if count != 1:
                   raise SystemExit(f"expected exactly one workflow replacement, found {count}: {old!r}")
