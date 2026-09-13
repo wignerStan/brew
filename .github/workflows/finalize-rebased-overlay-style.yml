@@ -67,14 +67,12 @@ jobs:
                   "          } >>\"${GITHUB_OUTPUT}\"\n",
               ),
               (
-                  "          /usr/bin/git -C \"${repository}\" remote add origin \\\\\n"
                   "            https://github.com/${GITHUB_REPOSITORY}.git\n",
-                  "          /usr/bin/git -C \"${repository}\" remote add origin \\\\\n"
                   "            \"https://github.com/${GITHUB_REPOSITORY}.git\"\n",
               ),
               (
-                  "              --force-with-lease=refs/heads/overlay-store:${BEFORE} \\\\\n",
-                  "              \"--force-with-lease=refs/heads/overlay-store:${BEFORE}\" \\\\\n",
+                  "--force-with-lease=refs/heads/overlay-store:${BEFORE}",
+                  "\"--force-with-lease=refs/heads/overlay-store:${BEFORE}\"",
               ),
           ]
           for old, new in replacements:
