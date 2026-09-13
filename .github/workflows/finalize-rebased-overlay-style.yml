@@ -1,0 +1,137 @@
+name: Finalize rebased overlay style
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-style-hardening-v12-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refactor-overlay-style-hardening-v12
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: 855084723e7c6ba4d2557795ca6969fa56033b0b
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  RESULT_BRANCH: refactor/overlay-style-hardening-v12-20260913
+
+jobs:
+  finalize:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact hardened candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          git remote add upstream https://github.com/Homebrew/brew.git 2>/dev/null ||
+            git remote set-url upstream https://github.com/Homebrew/brew.git
+          git fetch --no-tags --prune upstream \
+            +refs/heads/main:refs/remotes/upstream/main
+          test "$(git rev-parse upstream/main)" = "${UPSTREAM_SHA}"
+          test "$(git merge-base upstream/main HEAD)" = "${UPSTREAM_SHA}"
+
+      - name: Repair workflow ShellCheck findings and shell formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/rebase-upstream-overlay.yml")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              """          printf 'sha=%s\\n' "${AFTER}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\\n' "${EXPECTED_TREE}" >>"${GITHUB_OUTPUT}"
+          printf 'bundle_sha256=%s\\n' "${BUNDLE_SHA256}" >>"${GITHUB_OUTPUT}"
+""": """          {
+            printf 'sha=%s\\n' "${AFTER}"
+            printf 'tree=%s\\n' "${EXPECTED_TREE}"
+            printf 'bundle_sha256=%s\\n' "${BUNDLE_SHA256}"
+          } >>"${GITHUB_OUTPUT}"
+""",
+              """          /usr/bin/git -C "${repository}" remote add origin \\
+            https://github.com/${GITHUB_REPOSITORY}.git
+""": """          /usr/bin/git -C "${repository}" remote add origin \\
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+""",
+              """              --force-with-lease=refs/heads/overlay-store:${BEFORE} \\
+""": """              "--force-with-lease=refs/heads/overlay-store:${BEFORE}" \\
+""",
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one workflow replacement, found {count}: {old!r}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          bin/brew style --fix --display-cop-names \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          bash -n Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          git diff --check
+
+      - name: Commit the final style repair
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add -- \
+            .github/workflows/rebase-upstream-overlay.yml \
+            Library/Homebrew/test/support/overlay_transaction_recovery_test.sh
+          if git diff --cached --quiet; then
+            echo "Final style repair produced no tracked changes." >&2
+            exit 1
+          fi
+          git commit -m "Finish overlay workflow and shell style cleanup"
+          after="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "${CANDIDATE_SHA}"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+
+      - name: Run the fail-closed changed-line style gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py upstream/main HEAD
+
+      - name: Publish the style-clean candidate
+        shell: bash
+        env:
+          AFTER: ${{ steps.commit.outputs.after }}
+        run: |
+          set -euo pipefail
+          test -n "${AFTER}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${RESULT_BRANCH}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing result branch ${RESULT_BRANCH}." >&2
+            exit 1
+          fi
+          git push origin "${AFTER}:refs/heads/${RESULT_BRANCH}"
+
+      - name: Report the result identity
+        if: always()
+        shell: bash
+        env:
+          AFTER: ${{ steps.commit.outputs.after }}
+        run: |
+          printf 'Style-clean candidate: %s\n' "${AFTER:-not-created}"
+          printf 'Result branch: %s\n' "${RESULT_BRANCH}"
