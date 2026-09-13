@@ -182,7 +182,7 @@ homebrew-overlay-state-links-match() {
   homebrew-overlay-original-state-links-match "$@"
 }
 if homebrew-overlay-fast-view-current \
-  "${case_snapshot}/user" "${case_snapshot}/base" "${snapshot_state}" "${snapshot_digest}"
+   "${case_snapshot}/user" "${case_snapshot}/base" "${snapshot_state}" "${snapshot_digest}"
 then
   echo 'replacement between state digest and parsing unexpectedly passed the fast path' >&2
   exit 1
