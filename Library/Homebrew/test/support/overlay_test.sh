@@ -4,7 +4,7 @@ umask 077
 
 repository="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repository="$(cd "${repository}" && pwd -P)"
-# shellcheck source=../../utils/overlay.sh
+# shellcheck source=Homebrew/utils/overlay.sh
 source "${repository}/Library/Homebrew/utils/overlay.sh"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/homebrew-overlay-test.XXXXXX")"
@@ -93,7 +93,7 @@ export HOMEBREW_PATH="/usr/bin:/bin"
 export HOMEBREW_MACOS=""
 export HOMEBREW_MACOS_VERSION_NUMERIC=0
 export SHELL=/bin/bash
-# shellcheck source=../../cmd/shellenv.sh
+# shellcheck source=Homebrew/cmd/shellenv.sh
 source "${repository}/Library/Homebrew/cmd/shellenv.sh"
 shellenv_output="$(homebrew-shellenv bash)"
 grep -Fq "export PATH=\"${user_prefix}/bin:${user_prefix}/sbin:${base}/bin:${base}/sbin" <<<"${shellenv_output}"

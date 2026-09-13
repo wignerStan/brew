@@ -6,7 +6,7 @@ repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)}"
 repo="$(cd "${repo}" && pwd -P)"
 script="${repo}/Library/Homebrew/utils/overlay.sh"
 implementation="${repo}/Library/Homebrew/utils/overlay/core.sh"
-# shellcheck source=../../utils/overlay.sh
+# shellcheck source=Homebrew/utils/overlay.sh
 source "${script}"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/homebrew-overlay-generation-command.XXXXXX")"

@@ -66,6 +66,11 @@ RSpec.describe Homebrew::Overlay do
     FileUtils.ln_s(transaction.staging_version/"bin/foo", transaction.staging_version/"absolute-link")
   end
 
+  def begin_transaction!
+    described_class.begin_formula_transaction(formula, base_generation:) ||
+      raise("expected an overlay formula transaction")
+  end
+
   it "fsyncs each parent after publishing a new owned directory entry" do
     target = prefix/"durability/first/second"
     fsynced_parents = T.let([], T::Array[Pathname])
@@ -173,7 +178,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "builds an inherited replacement in a staging rack" do
     base_keg = add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
 
     owner_lock = prefix/"var/homebrew/overlay/transactions/.locks/#{transaction.id}.lock"
     expect(owner_lock).to be_a_file
@@ -201,7 +206,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "recovers the staging rack from the build subprocess environment" do
     add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     described_class.unregister_transaction("foo", transaction)
 
     with_env(HOMEBREW_OVERLAY_INSTALL_TRANSACTION_ID: transaction.id) do
@@ -228,7 +233,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "rejects hard-linked transaction owner locks before cleanup" do
     add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     owner_lock = prefix/"var/homebrew/overlay/transactions/.locks/#{transaction.id}.lock"
     peer = root/"owner-lock-peer"
     FileUtils.ln(owner_lock, peer)
@@ -246,7 +251,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "atomically publishes a native version-union rack and commits it" do
     base_keg = add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
 
     transaction.publish!
@@ -273,7 +278,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "persists transaction publication metadata before advancing journal states" do
     add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
     events = T.let([], T::Array[T.untyped])
     state_file = transaction.transaction_dir/"state"
@@ -332,7 +337,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "does not accept a hard-linked transaction marker" do
     add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
     transaction.publish!
     marker = transaction.final_version/".brew-overlay-transaction"
@@ -355,7 +360,7 @@ RSpec.describe Homebrew::Overlay do
     opened_marker = T.let(nil, T.nilable(Pathname))
 
     add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
     transaction.publish!
     marker = transaction.final_version/".brew-overlay-transaction"
@@ -384,7 +389,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "atomically restores the original inherited rack on rollback" do
     base_keg = add_base_formula("foo", "2.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
 
     transaction.publish!
@@ -401,7 +406,7 @@ RSpec.describe Homebrew::Overlay do
 
   it "discards staging without touching the inherited rack" do
     base_keg = add_base_formula("foo", "1.0")
-    transaction = T.must(described_class.begin_formula_transaction(formula, base_generation:))
+    transaction = begin_transaction!
     stage(transaction)
 
     transaction.rollback!
