@@ -4,6 +4,7 @@
 require "env_config"
 require "fileutils"
 require "securerandom"
+require "utils/path"
 require "utils/popen"
 
 module Homebrew
@@ -1908,7 +1909,7 @@ module Homebrew
 
       return unless path.directory?
 
-      return path.resolved_path unless inherited_prefix_link?(path)
+      return Utils::Path.resolved_path(path) unless inherited_prefix_link?(path)
 
       resolved = path.realpath
       cellar = canonical_path(base_cellar)
