@@ -143,7 +143,7 @@ class Migrator
             The local #{oldname} rack was left untouched. Install or reinstall #{formula.name}
             to create a separate writable realization, then remove #{oldname} after validating it.
           EOS
-          strict_inherited && !dry_run ? ofail(message) : opoo(message)
+          (strict_inherited && !dry_run) ? ofail(message) : opoo(message)
           next
         end
 
