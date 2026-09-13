@@ -109,7 +109,7 @@ jobs:
           tree="$(git rev-parse 'HEAD^{tree}')"
           test "$(git rev-parse HEAD^)" = "${CANDIDATE_BEFORE}"
           test "$(git rev-parse HEAD^^^)" = "${UPSTREAM_SHA}"
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain --untracked-files=no)"
           printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
           printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
 
