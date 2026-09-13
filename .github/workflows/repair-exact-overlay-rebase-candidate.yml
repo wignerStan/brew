@@ -1,0 +1,162 @@
+name: Repair exact overlay rebase reconciliation artifacts
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-repair-v6-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-exact-overlay-rebase-candidate
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_BRANCH: automation/refactor-overlay-rebased-candidate-20260913
+  CANDIDATE_BEFORE: ec323fcb9081e87382d40d2c164a581d9ee2b547
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+
+jobs:
+  repair:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: automation/refactor-overlay-rebased-candidate-20260913
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply strict reconciliation repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_BEFORE}"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one repair anchor, found {count}")
+              file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "Library/Homebrew/formula_installer.rb",
+              """        unlock
+              end
+            end
+            raise
+            raise
+          end
+          """,
+              """        unlock
+              end
+            end
+            raise
+          end
+          """,
+          )
+
+          replace_once(
+              "Library/Homebrew/keg.rb",
+              """  rescue => e
+            raise if dry_run || e.is_a?(AlreadyLinkedError)
+
+            unlink(verbose:)
+          rescue => e
+            raise if dry_run || e.is_a?(AlreadyLinkedError)
+
+            unlink(verbose:)
+          """,
+              """  rescue => e
+            raise if dry_run || e.is_a?(AlreadyLinkedError)
+
+            unlink(verbose:)
+          """,
+          )
+
+          replace_once(
+              "Library/Homebrew/test/cmd/unlink_spec.rb",
+              """    expect(binary).to be_a_symlink
+
+          it \"rejects unlink before side effects when an administrator fallback exists\" do
+          """,
+              """    expect(binary).to be_a_symlink
+            end
+
+          it \"rejects unlink before side effects when an administrator fallback exists\" do
+          """,
+          )
+
+          replace_once(
+              "Library/Homebrew/test/cmd/postinstall_spec.rb",
+              """    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file
+
+          it \"rejects inherited formulae before running post-install code\" do
+          """,
+              """    expect(Formula[\"testball\"].prefix/\"postinstall-ran\").to be_a_file
+            end
+
+          it \"rejects inherited formulae before running post-install code\" do
+          """,
+          )
+          PY
+
+          git diff --check
+          while IFS= read -r ruby_file; do
+            ruby -c "${ruby_file}" >/dev/null
+          done < <(git diff --name-only "${UPSTREAM_SHA}...HEAD" -- '*.rb' | sort)
+
+      - name: Amend the single upstream-rooted candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config core.hooksPath /dev/null
+          git add \
+            Library/Homebrew/formula_installer.rb \
+            Library/Homebrew/keg.rb \
+            Library/Homebrew/test/cmd/unlink_spec.rb \
+            Library/Homebrew/test/cmd/postinstall_spec.rb
+          git commit --amend --no-edit
+
+          after="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+          test -z "$(git status --porcelain)"
+          test -z "$(git rev-list --merges "${UPSTREAM_SHA}..${after}")"
+          printf 'after=%s\n' "${after}" >>"${GITHUB_OUTPUT}"
+          printf 'tree=%s\n' "${tree}" >>"${GITHUB_OUTPUT}"
+
+          git push \
+            --force-with-lease="refs/heads/${CANDIDATE_BRANCH}:${CANDIDATE_BEFORE}" \
+            origin "${after}:refs/heads/${CANDIDATE_BRANCH}"
+
+      - name: Report corrected immutable identity
+        shell: bash
+        env:
+          AFTER: ${{ steps.candidate.outputs.after }}
+          TREE: ${{ steps.candidate.outputs.tree }}
+        run: |
+          set -euo pipefail
+          printf 'Corrected candidate: %s\n' "${AFTER}"
+          printf 'Corrected tree: %s\n' "${TREE}"
