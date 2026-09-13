@@ -251,6 +251,19 @@ RSpec.describe Homebrew::Cmd::Bundle::CleanupSubcommand do
       expect(described_class.taps_to_untap).to eql(%w[z homebrew/tap])
     end
 
+    it "excludes administrator-only inherited formulae from cleanup" do
+      name = full_name = "base-only"
+      allow(Homebrew::Bundle::Brew).to receive(:formulae).and_return([{ name:, full_name: }])
+      f = formula(name) do
+        T.bind(self, T.class_of(Formula))
+        url "#{name}-1.0"
+      end
+      stub_formula_loader f, name
+      allow(Homebrew::Overlay).to receive(:inherited_only_formula?).with(f).and_return(true)
+
+      expect(described_class.formulae_to_uninstall).to be_empty
+    end
+
     it "ignores formulae with .keepme references when computing which formulae to uninstall" do
       name = full_name ="c"
       allow(Homebrew::Bundle::Brew).to receive(:formulae).and_return([{ name:, full_name: }])
