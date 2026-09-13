@@ -1,0 +1,111 @@
+name: Validate corrected upstream-rooted overlay candidate
+
+on:
+  push:
+    branches:
+      - automation/refactor-overlay-validation-v7-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-corrected-overlay-rebase-candidate-v7
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  HOMEBREW_DEVELOPER: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  CANDIDATE_SHA: 2ba30627d7b6f54a8351617d4c65f0039148a373
+  CANDIDATE_TREE: 5f7590062707d6c8972b27627172a126514ba47f
+  CANDIDATE_BRANCH: automation/refactor-overlay-rebased-candidate-20260913
+  UPSTREAM_SHA: 06cc13226bd21a04faf2aba01d4a3e4836257ce8
+  TARGET_BRANCH: refactor/overlay-maintainability
+  TARGET_BEFORE: d986308aaef0c7dd1a0a669b25fdd94723e28c2f
+
+jobs:
+  validate:
+    if: github.repository == 'wignerStan/brew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out the exact corrected candidate without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: 2ba30627d7b6f54a8351617d4c65f0039148a373
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable candidate, upstream parent, and target lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${CANDIDATE_BRANCH}:refs/remotes/origin/candidate" \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/target"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${CANDIDATE_TREE}"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+          test "$(git rev-parse refs/remotes/origin/candidate)" = "${CANDIDATE_SHA}"
+          test "$(git rev-parse refs/remotes/origin/target)" = "${TARGET_BEFORE}"
+          test -z "$(git rev-list --merges "${UPSTREAM_SHA}..${CANDIDATE_SHA}")"
+
+      - name: Validate formatting, Ruby syntax, shell syntax, and workflow safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "${UPSTREAM_SHA}...HEAD"
+          while IFS= read -r ruby_file; do
+            [[ -n "${ruby_file}" ]] || continue
+            ruby -c "${ruby_file}" >/dev/null
+          done < <(git diff --name-only "${UPSTREAM_SHA}...HEAD" -- '*.rb' | sort)
+          bash -n \
+            bin/brew \
+            Library/Homebrew/cmd/shellenv.sh \
+            Library/Homebrew/utils/overlay.sh \
+            Library/Homebrew/utils/overlay/core.sh
+          while IFS= read -r test_script; do
+            bash -n "${test_script}"
+          done < <(find Library/Homebrew/test/support -maxdepth 1 -name 'overlay_*.sh' -print | sort)
+          python3 -m py_compile \
+            Library/Homebrew/test/support/overlay_style_delta_check.py \
+            Library/Homebrew/test/support/overlay_style_delta_check_test.py
+          python3 Library/Homebrew/test/support/overlay_style_delta_check_test.py
+          bash Library/Homebrew/test/support/overlay_rebase_workflow_test.sh "$PWD"
+
+      - name: Run complete overlay recovery matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash Library/Homebrew/test/support/overlay_final_review_reproducer.sh "$PWD"
+
+      - name: Run full Homebrew RSpec suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew tests --no-parallel
+
+      - name: Reject style offenses in the rebased overlay delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Library/Homebrew/test/support/overlay_style_delta_check.py "${UPSTREAM_SHA}" HEAD
+
+      - name: Run Sorbet
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin/brew typecheck
+
+      - name: Attest the exact validated commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${CANDIDATE_TREE}"
+          test "$(git rev-parse HEAD^)" = "${UPSTREAM_SHA}"
+          printf 'Validated candidate: %s\n' "${CANDIDATE_SHA}"
+          printf 'Validated tree: %s\n' "${CANDIDATE_TREE}"
