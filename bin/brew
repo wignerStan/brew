@@ -200,8 +200,9 @@ export_homebrew_overlay_env_file() {
         echo "Error: invalid permissions on user overlay environment file: ${env_file}" >&2
         return 1
         ;;
+      *) ;;
     esac
-    if (( (8#${mode} & 8#022) != 0 ))
+    if (((8#${mode} & 8#022) != 0))
     then
       echo "Error: user overlay environment file is group- or world-writable: ${env_file}" >&2
       return 1
@@ -216,10 +217,10 @@ export_homebrew_overlay_env_file() {
     case "${line}" in
       "" | \#*) ;;
       HOMEBREW_OVERLAY=* | \
-      HOMEBREW_OVERLAY_BASE_PREFIX=* | \
-      HOMEBREW_OVERLAY_FORCE=* | \
-      HOMEBREW_OVERLAY_USER_PREFIX=*)
-        export "${line}"
+        HOMEBREW_OVERLAY_BASE_PREFIX=* | \
+        HOMEBREW_OVERLAY_FORCE=* | \
+        HOMEBREW_OVERLAY_USER_PREFIX=*)
+        export "${line?}"
         ;;
       *)
         if [[ "${strict}" -eq 1 ]]
@@ -274,7 +275,7 @@ export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/brew.env"
 export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/overlay.env" 1 || exit $?
 for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
 do
-  export "${OVERLAY_ENV_ASSIGNMENT}"
+  export "${OVERLAY_ENV_ASSIGNMENT?}"
 done
 unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 
@@ -283,13 +284,6 @@ unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 # environment filtering and in sync with Library/Homebrew/utils/overlay.sh.
 source "${HOMEBREW_REPOSITORY}/Library/Homebrew/utils/overlay.sh"
 homebrew-overlay-bootstrap "$@" || exit $?
-
-# Use HOMEBREW_FORCE_BREW_WRAPPER if set.
-export HOMEBREW_ORIGINAL_BREW_FILE="${HOMEBREW_BREW_FILE}"
-if [[ -n "${HOMEBREW_FORCE_BREW_WRAPPER:-}" ]]
-then
-  HOMEBREW_BREW_FILE="${HOMEBREW_FORCE_BREW_WRAPPER}"
-fi
 
 # Record which HOMEBREW_* variables the user set (including via brew.env
 # above) before brew exports more itself, e.g. HOMEBREW_EDITOR from
