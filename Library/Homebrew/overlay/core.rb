@@ -20,6 +20,7 @@ module Homebrew
     @mutation_lock = T.let(nil, T.nilable(File))
     @atomic_exchange_supported = T.let(false, T::Boolean)
 
+    # Reject mutations of a keg owned by the administrator.
     class InheritedKegError < RuntimeError
       sig { params(keg_path: Pathname, base_prefix: Pathname).void }
       def initialize(keg_path, base_prefix)
@@ -33,6 +34,7 @@ module Homebrew
 
     class TransactionFailure < RuntimeError; end
 
+    # Reject publication when the administrator base changed during a build.
     class BaseGenerationChangedError < TransactionFailure
       sig { params(expected: String, actual: String).void }
       def initialize(expected, actual)
@@ -1787,7 +1789,7 @@ module Homebrew
       keg_stat = keg.lstat
       remove_tree_durable!(keg, expected_device: keg_stat.dev, expected_inode: keg_stat.ino)
 
-      rack.rmdir_if_possible
+      Utils::Path.rmdir_if_possible(rack)
       clear_caches!
       sync!(mutation: true)
       true
@@ -1848,7 +1850,7 @@ module Homebrew
       return if formula.nil?
       return unless valid_formula_name?(formula)
 
-      version = (components.length == 3) ? components[2] : nil
+      version = components[2] if components.length == 3
       valid_version = version.nil? || valid_version_name?(version)
       return unless valid_version
 

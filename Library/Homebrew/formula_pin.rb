@@ -3,6 +3,7 @@
 
 require "keg"
 require "overlay"
+require "utils/path"
 
 # Helper functions for pinning a formula.
 class FormulaPin
@@ -40,7 +41,7 @@ class FormulaPin
 
   sig { void }
   def unpin
-    path.unlink if pinned?
+    path.unlink if path.symlink?
     Utils::Path.rmdir_if_possible(HOMEBREW_PINNED_KEGS)
   end
 
@@ -49,7 +50,7 @@ class FormulaPin
     return false unless path.symlink?
     return false unless path.exist?
 
-    !Homebrew::Overlay.inherited_keg?(path.resolved_path)
+    !Homebrew::Overlay.inherited_keg?(Utils::Path.resolved_path(path))
   rescue SystemCallError
     false
   end
@@ -61,7 +62,7 @@ class FormulaPin
     return false unless path.symlink?
     return true unless path.exist?
 
-    Homebrew::Overlay.inherited_keg?(path.resolved_path)
+    Homebrew::Overlay.inherited_keg?(Utils::Path.resolved_path(path))
   rescue SystemCallError
     true
   end
