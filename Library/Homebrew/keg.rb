@@ -312,8 +312,8 @@ class Keg
     opt_record.symlink? && path == Homebrew::Overlay.keg_record_target(opt_record)
   end
 
-  sig { params(versioned_aliases: T::Array[String]).void }
-  def remove_old_aliases(versioned_aliases: aliases)
+  sig { params(versioned_aliases: T::Array[String], uninstalling: T::Boolean).void }
+  def remove_old_aliases(versioned_aliases: aliases, uninstalling: false)
     opt = opt_record.parent
     linkedkegs = linked_keg_record.parent
 
@@ -333,8 +333,8 @@ class Keg
     Pathname.glob("#{opt_record}@*").each do |link|
       name = link.basename.to_s
       # Keep an alias this keg owns while its target is still installed.
-      # A link that pointed at this keg is removed once that keg is gone.
-      next if versioned_aliases.include?(name) && link.exist?
+      # During uninstall, remove links to this keg before deleting its files.
+      next if versioned_aliases.include?(name) && link.exist? && (!uninstalling || link.realpath != path)
 
       remove_alias_symlink(link, rack, match_parent: true)
       remove_alias_symlink(linkedkegs/name, rack, match_parent: true)
@@ -367,13 +367,12 @@ class Keg
     # Remove namespace records while the keg still exists, so an interruption
     # leaves an installed-but-unlinked keg rather than broken records that block
     # overlay reconciliation.
-    versioned_aliases = aliases
     remove_opt_record if optlinked?
     remove_linked_keg_record if linked?
-    remove_old_aliases(versioned_aliases:)
+    remove_old_aliases(uninstalling: true)
     remove_oldname_opt_records
     FileUtils.rm_r(path)
-    rmdir_if_possible(path.parent)
+    Utils::Path.rmdir_if_possible(path.parent)
     if Homebrew::Overlay.active? && path.parent.expand_path == (HOMEBREW_CELLAR/name).expand_path
       Homebrew::Overlay.restore_inherited_rack!(name)
     end
