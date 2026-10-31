@@ -4,6 +4,7 @@
 require "abstract_command"
 require "cache_store"
 require "linkage_checker"
+require "overlay"
 
 module Homebrew
   module DevCmd
@@ -41,10 +42,11 @@ module Homebrew
             ohai "Checking #{keg.name} linkage" if kegs.size > 1
 
             result = LinkageChecker.new(keg,
-                                        cache_db: T.cast(db,
-                                                         CacheStoreDatabase[String,
-                                                                            T::Hash[T.any(String, Symbol),
-                                                                                    T.anything]]))
+                                        rebuild_cache: Homebrew::Overlay.active?,
+                                        cache_db:      T.cast(db,
+                                                              CacheStoreDatabase[String,
+                                                                                 T::Hash[T.any(String, Symbol),
+                                                                                         T.anything]]))
 
             if args.test?
               result.display_test_output(strict: args.strict?)

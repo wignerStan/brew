@@ -231,4 +231,12 @@ test "$(HOME="${home}" XDG_DATA_HOME="${home}/xdg-data" homebrew-overlay-default
 test ! -e "${home}/.local/share/homebrew/envs"
 test ! -e "${home}/.local/share/homebrew/pkgs"
 
+# An administrator upgrade replaces the inherited opt target on next sync.
+rm "${base}/bin/foo" "${base}/opt/foo" "${base}/var/homebrew/linked/foo"
+create_formula "${base}" foo 1.1 base-foo-new
+homebrew-overlay-bump-generation "${base}" >/dev/null
+homebrew-overlay-sync --force
+test -L "${user_prefix}/Cellar/foo"
+test "$(readlink -f "${user_prefix}/opt/foo")" = "${base}/Cellar/foo/1.1"
+test "$(env PATH="${base}/bin:/usr/bin:/bin" foo)" = base-foo-new
 printf 'native overlay shell test: PASS\n'

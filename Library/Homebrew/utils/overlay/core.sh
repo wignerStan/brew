@@ -1739,7 +1739,7 @@ homebrew-overlay-update-base-drift() {
     if [[ "${warning_key}" != "${old_warning}" ]]
     then
       echo "Warning: the administrator Homebrew base changed after local formulae were built." >&2
-      echo "Run 'brew doctor' and reinstall the reported local formulae before relying on them." >&2
+      echo "Run 'brew overlay-sync --repair' to check private dependencies and linkage." >&2
       homebrew-overlay-atomic-write "${warned_file}" 0600 <<<"${warning_key}" || return 1
     fi
   else
