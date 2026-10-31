@@ -152,7 +152,8 @@ Initialization does not replace the developer-owned user configuration or
 | `brew link`, `brew unlink`, or `brew postinstall` on an inherited-only formula | Refuses the mutation; create a private realization first |
 | `brew pin foo` on an inherited-only formula | Refuses because administrator-owned bytes can disappear; run `brew reinstall foo` first |
 | `brew pin foo` on a mixed rack | Pins the newest user-owned realization, never a newer inherited keg |
-| `brew overlay-sync` | Forces a locked structural reconciliation; suitable for a daily cron job |
+| `brew overlay-sync` | Forces a locked structural reconciliation without installing packages |
+| `brew overlay-sync --repair` | Also fills missing private-formula dependencies and rebuilds private formulae with broken linkage |
 | Migration into a name supplied by the base | Refuses before moving, merging, or deleting local files |
 
 The overlay is formula-first. Administrator casks are not inherited because cask
@@ -296,7 +297,7 @@ adding work to interactive shell startup, schedule the explicit forced sync with
 the user's crontab:
 
 ```cron
-17 3 * * * /home/linuxbrew/.linuxbrew/bin/brew overlay-sync
+17 3 * * * /home/linuxbrew/.linuxbrew/bin/brew overlay-sync --repair
 ```
 
 Install the entry in each developer's own crontab, never root's, and stagger the
@@ -305,9 +306,13 @@ path when the base prefix differs. The launcher reads the same inline, user, and
 system overlay configuration before redirecting into the user prefix.
 `brew overlay-sync` then uses the existing synchronization and mutation locks and
 performs a full structural reconciliation. It does not update repositories,
-install packages, or write the administrator prefix. Generation changes made
-through the patched `brew` still converge immediately on the next ordinary
-invocation.
+install packages, or write the administrator prefix. With `--repair`, it
+checks only private formulae, installs missing dependencies into the user
+prefix and reinstalls private formulae whose library linkage is broken. It
+verifies the dependency and linkage checks after repair. The administrator
+prefix and intentional private overrides are never removed by this command.
+Generation changes made through the patched `brew` still converge structurally
+on the next ordinary invocation.
 
 A pin to a private keg remains pointed at that user-owned keg across cron
 reconciliation and administrator generation changes; synchronization never

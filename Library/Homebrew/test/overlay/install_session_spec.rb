@@ -16,7 +16,7 @@ RSpec.describe Homebrew::Overlay::InstallSession do
       pkg_version: PkgVersion.parse("2.0"),
     )
   end
-  let(:keg) { instance_double(Keg, to_path: Pathname("/tmp/Cellar/foo/2.0")) }
+  let(:keg) { instance_double(Keg, to_path: "/tmp/Cellar/foo/2.0") }
 
   before do
     allow(Homebrew::Overlay).to receive_messages(
@@ -90,7 +90,7 @@ RSpec.describe Homebrew::Overlay::InstallSession do
     expect(Homebrew::Overlay).to receive(:record_base_generation!).with(keg.to_path, generation).ordered
     expect(Homebrew::Overlay).to receive(:verify_base_generation!).with(generation).ordered
     expect(Homebrew::Overlay).to receive(:mark_reinstall_committed!)
-      .with("foo", "2.0", keg.to_path)
+      .with("foo", "2.0", Pathname(keg.to_path))
       .ordered
     expect(Homebrew::Overlay).to receive(:bump_generation!).ordered
     session.commit!(keg)
