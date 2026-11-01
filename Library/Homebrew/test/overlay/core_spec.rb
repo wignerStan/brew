@@ -4,7 +4,7 @@
 require "keg"
 require "overlay"
 
-RSpec.describe Homebrew::Overlay do
+RSpec.describe Homebrew::Overlay, :needs_linux do
   let(:root) { mktmpdir }
   let(:prefix) { root/"home/.linuxbrew" }
   let(:user_cellar) { prefix/"Cellar" }

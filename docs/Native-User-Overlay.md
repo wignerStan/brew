@@ -396,6 +396,12 @@ an explicit force-with-lease against the previously observed deployment tip.
 Repository branch protection and required checks should enforce the same policy
 for all other writers.
 
+Direct pushes to the deployment branch also run the read-only overlay validation
+workflow, including the full recovery matrix and Homebrew test suite.
+Manual workflow dispatch validates the exact selected ref through the same gates.
+The macOS job checks native Bash bootstrap without starting Ruby or installing
+packages.
+
 ## Operational boundaries
 
 - `$HOME/.linuxbrew` is not Homebrew's canonical Linux bottle prefix. Bottles

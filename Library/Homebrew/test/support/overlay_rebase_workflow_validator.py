@@ -84,6 +84,13 @@ if "uses: actions/upload-artifact@v" in rebase or "uses: actions/download-artifa
     raise SystemExit("overlay workflow must pin artifact actions by immutable commit SHA")
 if "pull_request:" not in validation or "      - overlay-store" not in validation:
     raise SystemExit("overlay validation is not enabled for overlay-store pull requests")
+if "  workflow_dispatch:" not in validation:
+    raise SystemExit("overlay validation cannot be run manually for a selected ref")
+push_event = validation.split("\npermissions:", 1)[0].partition("  push:\n")[2]
+if "\n      - overlay-store\n" not in push_event:
+    raise SystemExit("overlay validation is not enabled for direct overlay-store pushes")
+if "runs-on: macos-latest" not in validation or "/bin/bash bin/brew --version" not in validation:
+    raise SystemExit("overlay validation does not check native macOS Bash bootstrap")
 if "    paths:" in validation or "    paths-ignore:" in validation:
     raise SystemExit("security-sensitive overlay PR validation must not be path-filtered")
 if "persist-credentials: false" not in validation:

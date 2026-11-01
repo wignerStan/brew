@@ -273,10 +273,13 @@ fi
 # HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY behavior: inline > local > system.
 export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/brew.env"
 export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/overlay.env" 1 || exit $?
-for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
-do
-  export "${OVERLAY_ENV_ASSIGNMENT?}"
-done
+if [[ "${#OVERLAY_INLINE_ENV[@]}" -gt 0 ]]
+then
+  for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
+  do
+    export "${OVERLAY_ENV_ASSIGNMENT?}"
+  done
+fi
 unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 
 # If explicitly enabled, redirect a user who cannot write the administrator
