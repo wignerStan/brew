@@ -63,10 +63,14 @@ The private rack owns the active user `opt` and linked-keg records while it has 
 real local version. When no private version exists, those records fall back to
 the administrator prefix.
 
-Homebrew does **not** recursively project the administrator's general `bin`,
-`lib`, `include`, `share`, `etc`, or `var` trees into the user prefix. Those
-trees cannot be combined safely with ordinary symlinks. `brew shellenv` instead
-places executable prefixes in this order:
+Homebrew links each administrator `bin/*` entry and `Caskroom/*` rack into
+the user prefix unless that user owns the same name. Synchronization repairs
+those links after a base change and removes stale inherited links. The versioned
+view stamp also forces one reconciliation after this projection change, even
+if no package generation changed. The native
+user `bin/brew` launcher stays separate. Other general `sbin`, `lib`,
+`include`, `share`, `etc`, and `var` trees are not projected. `brew shellenv`
+keeps executable prefixes in this order:
 
 ```text
 $HOME/.linuxbrew/bin
@@ -75,14 +79,18 @@ $HOME/.linuxbrew/sbin
 /home/linuxbrew/.linuxbrew/sbin
 ```
 
-The inherited Cellar and `opt` records let Homebrew resolve lower formulae and
-dependencies. The two general-purpose prefix trees are not presented as a
-filesystem union. The administrator `bin`, `sbin`, and `Caskroom` trees are not
-linked into the user prefix, and the download cache remains independent.
+The inherited Cellar, `opt`, `bin`, and Caskroom records expose base packages.
+The base `sbin` directory stays on PATH as a fallback. Download caches remain
+independent per account.
 
 ## Enable the overlay
 
-The preferred per-user configuration is
+On Linux, an account other than the owner of `/home/linuxbrew/.linuxbrew`
+automatically uses `$HOME/.linuxbrew` when it invokes the base `brew`. The
+base owner and root keep the base prefix. An explicit `HOMEBREW_OVERLAY=0`
+disables automatic selection. The per-user configuration can pin an override:
+
+The configuration file is
 `${HOMEBREW_USER_CONFIG_HOME}/overlay.env`, which defaults to
 `$HOME/.homebrew/overlay.env`:
 
@@ -395,6 +403,12 @@ the exact candidate SHA, and only then promotes that SHA to `overlay-store` with
 an explicit force-with-lease against the previously observed deployment tip.
 Repository branch protection and required checks should enforce the same policy
 for all other writers.
+
+Direct pushes to the deployment branch also run the read-only overlay validation
+workflow, including the full recovery matrix and Homebrew test suite.
+Manual workflow dispatch validates the exact selected ref through the same gates.
+The macOS job checks native Bash bootstrap without starting Ruby or installing
+packages.
 
 ## Operational boundaries
 

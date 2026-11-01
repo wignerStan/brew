@@ -42,10 +42,11 @@ assert_stamp_matches_state() {
   local state="${root}/user/var/homebrew/overlay/view.state"
   local -a lines=()
   mapfile -t lines <"${stamp}"
-  test "${#lines[@]}" -eq 3
+  test "${#lines[@]}" -eq 4
   homebrew-overlay-base-generation-valid "${lines[0]}"
   homebrew-overlay-base-generation-valid "${lines[1]}"
   test "${lines[2]}" = "$(sha256sum "${state}" | awk '{print $1}')"
+  test "${lines[3]}" = bin-cask-v1
 }
 
 # The desired payload is published before the transaction state. A crash in
@@ -76,6 +77,10 @@ case_fast="${work}/fast-path"
 make_case "${case_fast}"
 activate "${case_fast}"
 homebrew-overlay-sync --force
+stamp="${case_fast}/user/var/homebrew/overlay/view.stamp"
+sed -i '$d' "${stamp}"
+homebrew-overlay-sync
+test "$(tail -n 1 "${stamp}")" = bin-cask-v1
 rm "${case_fast}/user/Cellar/foo"
 homebrew-overlay-sync
 test "$(readlink "${case_fast}/user/Cellar/foo")" = "${case_fast}/base/Cellar/foo"

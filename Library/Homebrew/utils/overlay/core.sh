@@ -2,12 +2,9 @@
 #
 # The administrator prefix remains a normal read-only Homebrew installation.
 # A developer receives a second normal Homebrew prefix (default: ~/.linuxbrew).
-# Only package-view links are inherited into the user prefix:
-#   Cellar/<formula>, Cellar/<formula>/<version>, opt/<formula>, and
-#   var/homebrew/linked/<formula>.
-# Executables and other link-tree entries are consumed through the lower prefix
-# in `brew shellenv`; recursively projecting bin/lib/include/share is both slow
-# and unable to implement directory-union semantics safely.
+# Package racks and their native opt and linked records form the lower view.
+# Base bin entries and Caskroom racks are linked into the user prefix unless
+# that user owns an entry with the same name. Other link trees remain private.
 #
 # This file is sourced by bin/brew, which deliberately uses `set -u` without
 # `set -e`. Every function must therefore propagate errors explicitly.
@@ -953,6 +950,11 @@ homebrew-overlay-view-pair-valid() {
       formula="${relative#var/homebrew/linked/}"
       [[ "${formula}" != */* ]] && homebrew-overlay-formula-name-valid "${formula}"
       ;;
+    bin/* | Caskroom/*)
+      remainder="${relative#*/}"
+      [[ "${relative}" != bin/brew && "${remainder}" != */* ]] &&
+        homebrew-overlay-valid-relative-path "${remainder}"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -980,6 +982,8 @@ homebrew-overlay-desired-target-valid() {
       resolved="$(readlink -f -- "${target}")" || return 1
       homebrew-overlay-path-under "${resolved}" "${base_prefix}/Cellar/${formula}"
       ;;
+    bin/*) [[ -e "${target}" ]] ;;
+    Caskroom/*) [[ -d "${target}" ]] ;;
     *) return 1 ;;
   esac
 }
@@ -1275,11 +1279,10 @@ homebrew-overlay-discover-managed-view() {
     done
   done
 
-  # opt and linked-keg records have native user-owned counterparts, so inspect
-  # only links whose literal target proves they belong to this overlay. Those
-  # exact links remain safely removable after lower metadata or view.state is
-  # lost; unrelated local records are left alone.
-  for namespace in opt var/homebrew/linked
+  # Inspect links whose literal target proves they belong to this overlay.
+  # Exact lower links remain removable after view.state is lost; local entries
+  # with other targets are left alone.
+  for namespace in opt var/homebrew/linked bin Caskroom
   do
     root="${prefix}/${namespace}"
     homebrew-overlay-safe-mkdir "${prefix}" "${root}" || {
@@ -1292,7 +1295,13 @@ homebrew-overlay-discover-managed-view() {
       [[ -e "${entry}" || -L "${entry}" ]] || continue
       [[ -L "${entry}" ]] || continue
       name="${entry##*/}"
-      homebrew-overlay-formula-name-valid "${name}" || continue
+      if [[ "${namespace}" == bin || "${namespace}" == Caskroom ]]
+      then
+        [[ "${namespace}" != bin || "${name}" != brew ]] || continue
+        homebrew-overlay-valid-relative-path "${name}" || continue
+      else
+        homebrew-overlay-formula-name-valid "${name}" || continue
+      fi
       relative="${namespace}/${name}"
       expected="${base_prefix}/${relative}"
       link_paths+=("${entry}")
@@ -1361,7 +1370,7 @@ homebrew-overlay-build-view() {
   local base_cellar="${base_prefix}/Cellar"
   local user_cellar="${prefix}/Cellar"
   local base_rack user_rack user_version name base_version version_name
-  local base_opt base_linked
+  local base_opt base_linked base_entry user_entry namespace
 
   [[ -d "${base_cellar}" && ! -L "${base_cellar}" ]] || return 1
   [[ -d "${user_cellar}" && ! -L "${user_cellar}" ]] || return 1
@@ -1419,8 +1428,7 @@ homebrew-overlay-build-view() {
     fi
 
     # opt and linked-keg records are inherited only while no local realization
-    # exists. Executable/library trees are not projected; shellenv provides the
-    # lower prefix as a fallback search path.
+    # exists. The lower prefix stays on PATH for unprojected sbin entries.
     if ! homebrew-overlay-rack-has-local-version "${user_rack}"
     then
       base_opt="${base_prefix}/opt/${name}"
@@ -1435,6 +1443,24 @@ homebrew-overlay-build-view() {
           "${output_file}" "var/homebrew/linked/${name}" "${base_linked}" || return 1
       fi
     fi
+  done
+
+  for namespace in bin Caskroom
+  do
+    for base_entry in "${base_prefix}/${namespace}"/*
+    do
+      [[ -e "${base_entry}" ]] || continue
+      name="${base_entry##*/}"
+      [[ "${namespace}" != bin || "${name}" != brew ]] || continue
+      homebrew-overlay-valid-relative-path "${name}" || continue
+      user_entry="${prefix}/${namespace}/${name}"
+      if [[ ! -e "${user_entry}" && ! -L "${user_entry}" ]] ||
+         homebrew-overlay-link-matches "${user_entry}" "${base_entry}"
+      then
+        homebrew-overlay-record-pair \
+          "${output_file}" "${namespace}/${name}" "${base_entry}" || return 1
+      fi
+    done
   done
 }
 
@@ -2541,6 +2567,7 @@ homebrew-overlay-recover-reinstall-backups() {
 
 homebrew-overlay-sync-unlocked() {
   local force="${1:-0}"
+  local view_schema=bin-cask-v1
   local prefix configured_base base_prefix state_dir state_file stamp_file
   local base_key local_key old_base="" old_local="" old_state_digest="" state_digest status
   local local_dirty=0 finalize_mutation=0
@@ -2613,7 +2640,7 @@ homebrew-overlay-sync-unlocked() {
       echo "Error: unsafe overlay view stamp: ${stamp_file}" >&2
       return 1
     }
-    if ((${#stamp_lines[@]} == 3))
+    if ((${#stamp_lines[@]} == 4)) && [[ "${stamp_lines[3]}" == "${view_schema}" ]]
     then
       old_base="${stamp_lines[0]}"
       old_local="${stamp_lines[1]}"
@@ -2693,6 +2720,7 @@ homebrew-overlay-sync-unlocked() {
 ${base_key}
 ${local_key}
 ${state_digest}
+${view_schema}
 EOF_STAMP
 }
 

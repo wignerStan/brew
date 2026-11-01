@@ -92,16 +92,16 @@ grep -qx 'HOMEBREW_NO_ANALYTICS=1' "${case3}/home/.linuxbrew/etc/homebrew/brew.e
 test -f "${case3}/home/.linuxbrew/etc/homebrew/overlay.env"
 record_pass 'reinitialization preserves unrelated user configuration'
 
-printf 'CASE 4: inherited executable fallback does not require prefix projection\n'
+printf 'CASE 4: inherited executable is visible in the user prefix\n'
 case4="${work}/case4"
 make_base_formula "${case4}/base" foo 1.0
 make_user_roots "${case4}/user"
 export HOMEBREW_PREFIX="${case4}/user"
 export HOMEBREW_OVERLAY_BASE_PREFIX="${case4}/base"
 homebrew-overlay-sync --force
-test ! -e "${case4}/user/bin/foo"
-test "$(env PATH="${case4}/user/bin:${case4}/base/bin:/usr/bin:/bin" foo)" = base-foo
-record_pass 'lower executable stays in native base prefix and works through PATH fallback'
+test "$(readlink "${case4}/user/bin/foo")" = "${case4}/base/bin/foo"
+test "$(env PATH="${case4}/user/bin:/usr/bin:/bin" foo)" = base-foo
+record_pass 'lower executable is linked into the native user prefix'
 
 printf 'CASE 5: unsafe destination parent is a hard failure\n'
 case5="${work}/case5"

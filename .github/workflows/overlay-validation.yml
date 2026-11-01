@@ -1,11 +1,13 @@
 name: Validate native overlay
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - overlay-store
   push:
     branches:
+      - overlay-store
       - 'fix/overlay-*'
       - 'refactor/overlay-*'
 
@@ -22,6 +24,26 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
+  native-macos-bootstrap:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Check native Bash bootstrap without overlay settings
+        shell: bash
+        run: |
+          env \
+            -u HOMEBREW_OVERLAY \
+            -u HOMEBREW_OVERLAY_BASE_PREFIX \
+            -u HOMEBREW_OVERLAY_FORCE \
+            -u HOMEBREW_OVERLAY_USER_PREFIX \
+            /bin/bash bin/brew --version
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 180

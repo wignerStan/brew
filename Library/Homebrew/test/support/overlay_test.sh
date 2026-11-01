@@ -81,12 +81,35 @@ test "$(readlink "${user_prefix}/opt/foo")" = "${base}/opt/foo"
 test -L "${user_prefix}/var/homebrew/linked/foo"
 test ! -e "${user_prefix}/Cellar/foo-old"
 test ! -L "${user_prefix}/Cellar/foo-old"
-# Cask artifacts and the administrator link tree are deliberately not copied.
-test ! -e "${user_prefix}/bin/foo"
-test ! -e "${user_prefix}/bin/demo-cask"
+# The user prefix directly exposes inherited commands and cask racks.
+test "$(readlink "${user_prefix}/bin/foo")" = "${base}/bin/foo"
+test "$(readlink "${user_prefix}/bin/demo-cask")" = "${base}/bin/demo-cask"
+test "$(readlink "${user_prefix}/Caskroom/demo")" = "${base}/Caskroom/demo"
+test "$(env PATH="${user_prefix}/bin:/usr/bin:/bin" foo)" = base-foo
+
+# A private command or cask rack shadows the administrator entry. Removing
+# that private entry restores the inherited link on the next reconciliation.
+rm "${user_prefix}/bin/demo-cask"
+printf '#!/bin/sh\nprintf "private-cask\\n"\n' >"${user_prefix}/bin/demo-cask"
+chmod 0755 "${user_prefix}/bin/demo-cask"
+homebrew-overlay-sync --force
+test "$(env PATH="${user_prefix}/bin:/usr/bin:/bin" demo-cask)" = private-cask
+rm "${user_prefix}/bin/demo-cask"
+homebrew-overlay-sync --force
+test "$(readlink "${user_prefix}/bin/demo-cask")" = "${base}/bin/demo-cask"
+
+rm "${user_prefix}/Caskroom/demo"
+mkdir "${user_prefix}/Caskroom/demo"
+printf 'private\n' >"${user_prefix}/Caskroom/demo/owner-note"
+homebrew-overlay-sync --force
+grep -qx private "${user_prefix}/Caskroom/demo/owner-note"
+rm "${user_prefix}/Caskroom/demo/owner-note"
+rmdir "${user_prefix}/Caskroom/demo"
+homebrew-overlay-sync --force
+test "$(readlink "${user_prefix}/Caskroom/demo")" = "${base}/Caskroom/demo"
 
 # shellenv composes two native prefixes: user first, administrator second.
-# This provides executable fallback without recursive link projection.
+# This retains a fallback for sbin and other unprojected entries.
 export HOMEBREW_CELLAR="${user_prefix}/Cellar"
 export HOMEBREW_REPOSITORY="${repository}"
 export HOMEBREW_PATH="/usr/bin:/bin"
@@ -238,5 +261,13 @@ homebrew-overlay-bump-generation "${base}" >/dev/null
 homebrew-overlay-sync --force
 test -L "${user_prefix}/Cellar/foo"
 test "$(readlink -f "${user_prefix}/opt/foo")" = "${base}/Cellar/foo/1.1"
-test "$(env PATH="${base}/bin:/usr/bin:/bin" foo)" = base-foo-new
+test "$(env PATH="${user_prefix}/bin:/usr/bin:/bin" foo)" = base-foo-new
+rm "${base}/bin/demo-cask"
+rm -r "${base}/Caskroom/demo"
+homebrew-overlay-bump-generation "${base}" >/dev/null
+homebrew-overlay-sync
+test ! -e "${user_prefix}/bin/demo-cask"
+test ! -L "${user_prefix}/bin/demo-cask"
+test ! -e "${user_prefix}/Caskroom/demo"
+test ! -L "${user_prefix}/Caskroom/demo"
 printf 'native overlay shell test: PASS\n'

@@ -1841,6 +1841,14 @@ module Homebrew
     sig { params(relative: String).returns(T.nilable(String)) }
     def self.expected_link_target(relative)
       components = relative.split("/", -1)
+      if components.length == 2 && %w[bin Caskroom].include?(components.first)
+        name = components.fetch(1)
+        return if name.empty? || %w[. ..].include?(name) || name.match?(/[\r\n]/)
+        return if components.first == "bin" && name == "brew"
+
+        return (base_prefix/relative).to_s
+      end
+
       formula = if (components.length == 2 && %w[Cellar opt].include?(components.first)) ||
                    (components.length == 3 && components.first == "Cellar")
         components[1]

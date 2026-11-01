@@ -4,7 +4,7 @@
 require "keg"
 require "overlay"
 
-RSpec.describe Homebrew::Overlay do
+RSpec.describe Homebrew::Overlay, :needs_linux do
   let(:root) { mktmpdir }
   let(:prefix) { root/"home/.linuxbrew" }
   let(:user_cellar) { prefix/"Cellar" }
@@ -543,6 +543,47 @@ RSpec.describe Homebrew::Overlay do
 
     expect(described_class.remove_inherited_prefix_link!(link)).to be(true)
     expect(link).not_to be_a_symlink
+  end
+
+  it "recognizes an exact inherited binary link" do
+    target = base_prefix/"bin/foo"
+    link = prefix/"bin/foo"
+    target.parent.mkpath
+    target.write("base\n")
+    link.parent.mkpath
+    FileUtils.ln_s(target, link)
+    state_file = prefix/"var/homebrew/overlay/view.state"
+    state_file.binwrite("bin/foo\0#{target}\0")
+    state_file.chmod 0600
+
+    expect(described_class.remove_inherited_prefix_link!(link)).to be(true)
+  end
+
+  it "recognizes an exact inherited cask link" do
+    target = base_prefix/"Caskroom/demo"
+    link = prefix/"Caskroom/demo"
+    target.mkpath
+    link.parent.mkpath
+    FileUtils.ln_s(target, link)
+    state_file = prefix/"var/homebrew/overlay/view.state"
+    state_file.binwrite("Caskroom/demo\0#{target}\0")
+    state_file.chmod 0600
+
+    expect(described_class.remove_inherited_prefix_link!(link)).to be(true)
+  end
+
+  it "rejects a state record for the user brew launcher" do
+    target = base_prefix/"bin/brew"
+    link = prefix/"bin/brew"
+    link.parent.mkpath
+    FileUtils.ln_s(target, link)
+    state_file = prefix/"var/homebrew/overlay/view.state"
+    state_file.binwrite("bin/brew\0#{target}\0")
+    state_file.chmod 0600
+
+    expect do
+      described_class.remove_inherited_prefix_link!(link)
+    end.to raise_error(Homebrew::Overlay::TransactionFailure, /invalid overlay view state/)
   end
 
   it "rejects managed link state replaced after opening" do

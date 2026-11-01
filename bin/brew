@@ -273,15 +273,25 @@ fi
 # HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY behavior: inline > local > system.
 export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/brew.env"
 export_homebrew_overlay_env_file "${HOMEBREW_USER_CONFIG_HOME}/overlay.env" 1 || exit $?
-for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
-do
-  export "${OVERLAY_ENV_ASSIGNMENT?}"
-done
+if [[ "${#OVERLAY_INLINE_ENV[@]}" -gt 0 ]]
+then
+  for OVERLAY_ENV_ASSIGNMENT in "${OVERLAY_INLINE_ENV[@]}"
+  do
+    export "${OVERLAY_ENV_ASSIGNMENT?}"
+  done
+fi
 unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 
-# If explicitly enabled, redirect a user who cannot write the administrator
-# prefix into a native-layout per-user Homebrew prefix. Keep this before
-# environment filtering and in sync with Library/Homebrew/utils/overlay.sh.
+# Users of the shared Linuxbrew base get their own native prefix by default.
+# An explicit HOMEBREW_OVERLAY=0 still selects the administrator base.
+if [[ -z "${HOMEBREW_OVERLAY+x}" && "${HOMEBREW_PREFIX}" == "/home/linuxbrew/.linuxbrew" &&
+      "${EUID}" -ne 0 && ! -O "${HOMEBREW_PREFIX}" ]]
+then
+  HOMEBREW_OVERLAY=1
+fi
+
+# Redirect the overlay user before environment filtering. Keep this in
+# sync with Library/Homebrew/utils/overlay.sh.
 source "${HOMEBREW_REPOSITORY}/Library/Homebrew/utils/overlay.sh"
 homebrew-overlay-bootstrap "$@" || exit $?
 
