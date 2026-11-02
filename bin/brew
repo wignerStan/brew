@@ -282,10 +282,11 @@ then
 fi
 unset OVERLAY_ENV_ASSIGNMENT OVERLAY_INLINE_ENV
 
-# Users of the shared Linuxbrew base get their own native prefix by default.
-# An explicit HOMEBREW_OVERLAY=0 still selects the administrator base.
+# All non-root users of the shared Linuxbrew base track package generations.
+# The base owner stays on the base; other users get their own native prefix.
+# An explicit HOMEBREW_OVERLAY=0 disables automatic selection.
 if [[ -z "${HOMEBREW_OVERLAY+x}" && "${HOMEBREW_PREFIX}" == "/home/linuxbrew/.linuxbrew" &&
-      "${EUID}" -ne 0 && ! -O "${HOMEBREW_PREFIX}" ]]
+      "${EUID}" -ne 0 ]]
 then
   HOMEBREW_OVERLAY=1
 fi

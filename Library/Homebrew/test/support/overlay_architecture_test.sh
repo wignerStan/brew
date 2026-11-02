@@ -103,5 +103,31 @@ done < <(
   find "${repo}/Library/Homebrew" "${repo}/bin" -type f \( -name '*.sh' -o -path "${repo}/bin/brew" \) -print
 )
 
+# Execute the launcher policy with an owned base path. The old non-owner guard
+# skipped generation tracking for the administrator's own package changes.
+if [[ "${EUID}" -ne 0 && -O "${repo}" ]]
+then
+  # The command matches literal launcher source, not shell variables here.
+  # shellcheck disable=SC2016
+  policy="$(grep -A4 -F 'if [[ -z "${HOMEBREW_OVERLAY+x}" && "${HOMEBREW_PREFIX}" == "/home/linuxbrew/.linuxbrew" &&' "${repo}/bin/brew")"
+  [[ -n "${policy}" ]] || {
+    echo 'Error: missing shared Linuxbrew default policy' >&2
+    exit 1
+  }
+  policy="$(printf '%s\n' "${policy}" | sed "s@/home/linuxbrew/.linuxbrew@${repo}@g")"
+  (
+    unset HOMEBREW_OVERLAY
+    export HOMEBREW_PREFIX="${repo}"
+    eval "${policy}"
+    [[ "${HOMEBREW_OVERLAY:-}" == 1 ]] || exit 1
+    HOMEBREW_OVERLAY=0
+    eval "${policy}"
+    [[ "${HOMEBREW_OVERLAY}" == 0 ]]
+  ) || {
+    echo 'Error: base owner default or explicit override is broken' >&2
+    exit 1
+  }
+fi
+
 printf 'overlay architecture boundary: PASS
 '

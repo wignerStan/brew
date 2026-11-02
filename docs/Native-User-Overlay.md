@@ -87,8 +87,10 @@ independent per account.
 
 On Linux, an account other than the owner of `/home/linuxbrew/.linuxbrew`
 automatically uses `$HOME/.linuxbrew` when it invokes the base `brew`. The
-base owner and root keep the base prefix. An explicit `HOMEBREW_OVERLAY=0`
-disables automatic selection. The per-user configuration can pin an override:
+base owner and root keep the base prefix. The base owner also uses the overlay
+generation protocol, so base package changes update the generation immediately.
+An explicit `HOMEBREW_OVERLAY=0` disables automatic selection. The per-user
+configuration can pin an override:
 
 The configuration file is
 `${HOMEBREW_USER_CONFIG_HOME}/overlay.env`, which defaults to
