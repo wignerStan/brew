@@ -19,6 +19,12 @@ homebrew-shellenv() {
     HOMEBREW_SHELLENV_INFO_PREFIX+=":${HOMEBREW_SHELLENV_BASE_PREFIX}/share/info"
   fi
 
+  if [[ -n "${HOMEBREW_SHELLENV_BASE_PREFIX}" ]]
+  then
+    # shellcheck source=Homebrew/utils/overlay/cron-hook.sh
+    source "${HOMEBREW_REPOSITORY}/Library/Homebrew/utils/overlay/cron-hook.sh" || true
+  fi
+
   if [[ "${HOMEBREW_PATH}:" == "${HOMEBREW_SHELLENV_PATH_PREFIX}:"* ]]
   then
     return

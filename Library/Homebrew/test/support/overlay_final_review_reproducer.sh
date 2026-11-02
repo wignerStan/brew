@@ -10,6 +10,7 @@ support="${repo}/Library/Homebrew/test/support"
 
 tests=(
   overlay_test.sh
+  overlay_cron_reconcile_test.sh
   overlay_review_findings.sh
   overlay_lock_safety_test.sh
   overlay_lock_ownership_test.sh

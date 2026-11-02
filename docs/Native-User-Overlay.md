@@ -299,22 +299,20 @@ safe, startup normally returns without traversing either Cellar. When a
 generation changes, Homebrew rebuilds the inherited Cellar, `opt`, and linked-keg
 view and commits a new stamp.
 
-Normal commands do not perform a calendar-based structural scan. To detect
-administrator changes made outside the patched generation protocol without
-adding work to interactive shell startup, schedule the explicit forced sync with
-the user's crontab:
+Normal commands do not perform a calendar-based structural scan. Each overlay
+user's `brew shellenv` checks a hidden date marker in that user's overlay state.
+Once per local day, the check verifies the user's own crontab, restores one
+managed 03:17 entry if it was removed and writes the date marker only after the
+check succeeds. The administrator base owner gets no overlay cron entry. A
+static shell setup can source `Library/Homebrew/utils/overlay/cron-hook.sh`
+without calling `brew shellenv` on every shell start.
 
-```cron
-17 3 * * * /home/linuxbrew/.linuxbrew/bin/brew overlay-sync --repair
-```
-
-Install the entry in each developer's own crontab, never root's, and stagger the
-minute across large multi-user systems. Use the actual administrator `bin/brew`
-path when the base prefix differs. The launcher reads the same inline, user, and
-system overlay configuration before redirecting into the user prefix.
-`brew overlay-sync` then uses the existing synchronization and mutation locks and
-performs a full structural reconciliation. It does not update repositories,
-install packages, or write the administrator prefix. With `--repair`, it
+The cron entry invokes the fork's `cron.sh --run` for the user prefix. It calls
+the administrator `bin/brew` with explicit overlay settings and runs
+`brew overlay-sync --repair`. The job records its last success or failure and
+keeps its latest output under `var/homebrew/overlay/` in the user prefix. It
+uses the existing synchronization and mutation locks. It does not update
+repositories or write the administrator prefix. With `--repair`, it
 checks only private formulae, installs missing dependencies into the user
 prefix and reinstalls private formulae whose library linkage is broken. It
 verifies the dependency and linkage checks after repair. The administrator
