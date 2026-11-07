@@ -54,11 +54,22 @@ source "${repository}/Library/Homebrew/utils/overlay/cron-hook.sh"
 test "$(grep -Fc '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}" || true)" = 0
 printf 'yesterday\n' >"${marker}"
 export HOMEBREW_PATH="${prefix}/bin:${prefix}/sbin:${base}/bin:${base}/sbin:/usr/bin:/bin"
+export HOMEBREW_REPOSITORY="${work}/stale-overlay/Homebrew"
+source "${repository}/Library/Homebrew/utils/overlay/cron-hook.sh"
+test "$(grep -Fc '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}")" = 1
+test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 2
+
+# shellenv must restore through the base repository even when an overlay
+# shell exports a stale HOMEBREW_REPOSITORY value.
+grep -Fv '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}" >"${work}/unrelated"
+cat "${work}/unrelated" >"${FAKE_CRONTAB_FILE}"
+printf 'yesterday\n' >"${marker}"
+export HOMEBREW_REPOSITORY="${repository}"
 # shellenv must check cron even when the PATH fast path returns no output.
 source "${repository}/Library/Homebrew/cmd/shellenv.sh"
 test -z "$(homebrew-shellenv bash)"
 test "$(grep -Fc '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}")" = 1
-test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 2
+test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 3
 
 /bin/bash "${cron}" --run "${prefix}" "${base}" "${repository}"
 test "$(cat "${BREW_CALLS}")" = 'overlay-sync --repair'
@@ -71,7 +82,7 @@ touch "${owned}/bin/brew"
 chmod 0755 "${owned}/bin/brew"
 /bin/bash "${cron}" --ensure "${work}/owned-user" "${owned}" "${repository}" "${today}"
 test ! -e "${work}/owned-user/var/homebrew/overlay/.cron-checked-date"
-test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 2
+test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 3
 
 # Each overlay user has an independent crontab and check marker. A failed
 # installation must remain eligible for a retry on the same date.
@@ -89,5 +100,23 @@ test ! -e "${second}/var/homebrew/overlay/.cron-checked-date"
 test "$(cat "${second}/var/homebrew/overlay/.cron-checked-date")" = "${today}"
 grep -Fq -- "--run ${second} ${base}" "${FAKE_CRONTAB_FILE}"
 test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 1
+
+# Zsh sources the hook through its own $0 and must ignore stale overlay state.
+if command -v zsh >/dev/null
+then
+  zsh_user="${work}/zsh-user"
+  mkdir -p "${zsh_user}/var/homebrew/overlay"
+  export FAKE_CRONTAB_FILE="${work}/zsh-schedule"
+  export FAKE_CRONTAB_WRITES="${work}/zsh-writes"
+  printf '4 * * * * echo unrelated\n' >"${FAKE_CRONTAB_FILE}"
+  env \
+    HOMEBREW_PREFIX="${zsh_user}" \
+    HOMEBREW_OVERLAY_BASE_PREFIX="${base}" \
+    HOMEBREW_REPOSITORY="${work}/stale-overlay/Homebrew" \
+    zsh -fc 'source "$1"' zsh "${repository}/Library/Homebrew/utils/overlay/cron-hook.sh"
+  grep -Fxq '4 * * * * echo unrelated' "${FAKE_CRONTAB_FILE}"
+  test "$(grep -Fc '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}")" = 1
+  test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 1
+fi
 
 echo 'overlay cron reconciliation test: PASS'
