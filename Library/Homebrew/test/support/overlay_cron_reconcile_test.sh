@@ -113,7 +113,7 @@ then
     HOMEBREW_PREFIX="${zsh_user}" \
     HOMEBREW_OVERLAY_BASE_PREFIX="${base}" \
     HOMEBREW_REPOSITORY="${work}/stale-overlay/Homebrew" \
-    zsh -fc 'source "$1"' zsh "${repository}/Library/Homebrew/utils/overlay/cron-hook.sh"
+    zsh -fc "source \"\$1\"" zsh "${repository}/Library/Homebrew/utils/overlay/cron-hook.sh"
   grep -Fxq '4 * * * * echo unrelated' "${FAKE_CRONTAB_FILE}"
   test "$(grep -Fc '# homebrew-overlay-sync' "${FAKE_CRONTAB_FILE}")" = 1
   test "$(wc -l <"${FAKE_CRONTAB_WRITES}")" = 1
